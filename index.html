@@ -229,7 +229,12 @@ var SLCap = (function () {
     }
     throw new Error('"' + name + '" no contiene la hoja "Seguimiento" ni hojas "KPI WU MKP".');
   }
-  return { parseCapacityWorkbook: parseCapacityWorkbook, parseSeguimiento: parseSeguimiento, parseMkpSheet: parseMkpSheet, sheetPeriod: sheetPeriod };
+  /* combina filas por fecha (las del segundo arreglo reemplazan a las del primero) */
+  function mergeRows(a, b) {
+    var m = {}; (a || []).forEach(function (r) { m[r[0]] = r; }); (b || []).forEach(function (r) { m[r[0]] = r; });
+    return Object.keys(m).sort().map(function (k) { return m[k]; });
+  }
+  return { mergeRows: mergeRows, parseCapacityWorkbook: parseCapacityWorkbook, parseSeguimiento: parseSeguimiento, parseMkpSheet: parseMkpSheet, sheetPeriod: sheetPeriod };
 })();
 
 /* ==========================================================================
@@ -3065,23 +3070,24 @@ function c5Empty() {
       <div class="mx-auto w-14 h-14 rounded-2xl bg-ink-800 border border-ink-600 grid place-items-center text-amber mb-4"><i data-lucide="gauge" class="w-7 h-7"></i></div>
       <div class="font-cond text-xl font-semibold">Carga los archivos de seguimiento de capacidad</div>
       <p class="text-sm text-ink-300 mt-2 max-w-lg mx-auto"><b class="text-ink-100">Seguimiento Cap Almacenamiento Callao</b> (hoja "Seguimiento") y <b class="text-ink-100">Seguimiento Cap Almacenamiento Callao MKP</b> (hojas "KPI WU MKP …"). O configura OneDrive para que se actualice solo.</p>
-      <div class="mt-5 inline-flex btn btn-amber"><i data-lucide="upload" class="w-4 h-4"></i>Seleccionar archivos</div></label>${c5SourcesPanel()}`}
+      <div class="mt-5 inline-flex btn btn-amber"><i data-lucide="upload" class="w-4 h-4"></i>Seleccionar archivos</div></label><label class="btn btn-sm mt-3 cursor-pointer inline-flex"><i data-lucide="folder-open" class="w-4 h-4"></i>O elegir la carpeta sincronizada de OneDrive en tu PC<input type="file" webkitdirectory multiple class="hidden" id="capDir0" /></label>${c5SourcesPanel()}`}
   </div>`;
 }
 function c5SourcesPanel() {
   const src = (S.cap && S.cap.src) || {}; const sy = LIVE.capsync;
-  const row = (k, l) => { const s = src[k]; return `<div class="flex items-center gap-2 text-xs py-1"><span class="w-2 h-2 rounded-full ${s ? 'bg-emerald-400' : 'bg-ink-500'}"></span><span class="text-ink-200 w-40">${l}</span><span class="text-ink-400">${s ? (s.via === 'onedrive' ? 'OneDrive' : 'Carga manual') + ' · datos al ' + fdate(s.last) + ' · ' + hhmm(s.at) : 'Sin datos'}</span></div>`; };
+  const row = (k, l) => { const s = src[k]; const nf = s && s.files ? s.files.length : 0; return `<div class="flex items-center gap-2 text-xs py-1"><span class="w-2 h-2 rounded-full ${s ? 'bg-emerald-400' : 'bg-ink-500'}"></span><span class="text-ink-200 w-40">${l}</span><span class="text-ink-400 truncate" title="${esc((s && s.files || []).join('\n'))}">${s ? (s.via === 'onedrive' ? 'Carpeta OneDrive' : 'Carga manual') + (nf ? ' · ' + nf + ' archivo' + (nf > 1 ? 's' : '') : '') + ' · datos al ' + fdate(s.last) + ' · ' + hhmm(s.at) : 'Sin datos'}</span></div>`; };
   return `<div class="panel p-4 mt-4 text-left admin-only">
     <div class="sect-title"><i data-lucide="cloud-cog" class="w-4 h-4"></i>Actualización automática desde OneDrive</div>
-    <p class="text-xs text-ink-400 mt-1">Pega los enlaces compartidos ("Cualquier persona con el vínculo puede ver"). El sitio los descarga cada hora y publica el análisis; los asistentes solo actualizan el Excel.</p>
+    <p class="text-xs text-ink-400 mt-1">Igual que en el Módulo 4: pega el enlace de la <b class="text-ink-200">carpeta</b> de OneDrive de cada seguimiento (compartida como "Cualquier persona con el vínculo puede ver"). Cada hora el sitio revisa todos los Excel de la carpeta, combina los datos por fecha (el archivo más reciente manda) y publica el análisis. También acepta el enlace de un archivo individual.</p>
     <div class="grid md:grid-cols-2 gap-2 mt-3">
-      <label class="block"><span class="text-[.66rem] font-semibold text-ink-300 uppercase tracking-wider">Seguimiento Cap Almacenamiento Callao (Backus + envases)</span><input class="input mt-1 num text-xs" id="capUrlBk" placeholder="https://1drv.ms/x/… o https://…sharepoint.com/…" /></label>
-      <label class="block"><span class="text-[.66rem] font-semibold text-ink-300 uppercase tracking-wider">Seguimiento Cap Almacenamiento Callao MKP</span><input class="input mt-1 num text-xs" id="capUrlMkp" placeholder="https://1drv.ms/x/…" /></label>
+      <label class="block"><span class="text-[.66rem] font-semibold text-ink-300 uppercase tracking-wider">Carpeta · Seguimiento capacidad Backus + envases</span><input class="input mt-1 num text-xs" id="capUrlBk" placeholder="https://1drv.ms/f/… (carpeta)" /></label>
+      <label class="block"><span class="text-[.66rem] font-semibold text-ink-300 uppercase tracking-wider">Carpeta · Seguimiento capacidad Marketplace</span><input class="input mt-1 num text-xs" id="capUrlMkp" placeholder="https://1drv.ms/f/… (carpeta)" /></label>
     </div>
     <div class="flex flex-wrap items-center gap-2 mt-3">
       <button class="btn btn-sm" id="capSaveCfg"><i data-lucide="save" class="w-4 h-4"></i>Guardar enlaces</button>
       <button class="btn btn-sm btn-amber" id="capSyncNow"><i data-lucide="refresh-cw" class="w-4 h-4"></i>Sincronizar ahora</button>
-      <label class="btn btn-sm cursor-pointer"><i data-lucide="file-up" class="w-4 h-4"></i>Cargar Excel manualmente<input type="file" accept=".xlsx,.xlsm" multiple class="hidden" id="capFiles2" /></label>
+      <label class="btn btn-sm cursor-pointer"><i data-lucide="file-up" class="w-4 h-4"></i>Archivos<input type="file" accept=".xlsx,.xlsm" multiple class="hidden" id="capFiles2" /></label>
+      <label class="btn btn-sm cursor-pointer" title="Elige la carpeta sincronizada de OneDrive en tu PC"><i data-lucide="folder-open" class="w-4 h-4"></i>Carpeta local<input type="file" webkitdirectory multiple class="hidden" id="capDir" /></label>
       <span class="text-xs text-ink-400" id="capCfgMsg">${C5.msg}</span>
     </div>
     <div class="mt-3 border-t border-ink-750 pt-2">${row('bk', 'Backus + envases')}${row('mkp', 'Marketplace')}
@@ -3313,22 +3319,30 @@ function c5Export() {
 /* ---------- ingesta y publicación (admin) ---------- */
 async function c5Ingest(files) {
   if (VIEWER) return;
-  const list = [...files].filter(f => /\.xls[xmb]?$/i.test(f.name)); if (!list.length) return;
+  const list = [...files].filter(f => /\.xls[xm]$/i.test(f.name) && !/^~\$/.test(f.name)).sort((a, b) => (a.lastModified || 0) - (b.lastModified || 0)); // el más reciente manda
+  if (!list.length) { toast('No se encontraron archivos Excel.', 'error'); return; }
   const cur = S.cap || { v: 1, bk: null, mkp: null, src: {} }; cur.src = cur.src || {};
-  for (const f of list) {
+  const used = { bk: [], mkp: [] }, skipped = [];
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i];
     try {
-      loading(true, 'Procesando capacidad…', f.name);
-      const r = await parseBuffer(await f.arrayBuffer(), 'cap', m => loading(true, 'Procesando capacidad…', f.name + ' · ' + m), { name: f.name });
-      const k = r.kind === 'cap-bk' ? 'bk' : 'mkp'; cur[k] = r.rows; cur.src[k] = { via: 'manual', at: new Date().toISOString(), last: r.rows.length ? r.rows[r.rows.length - 1][0] : null, n: r.rows.length, file: f.name };
-      toast(`${f.name}: ${fmt(r.rows.length)} días procesados`, 'ok');
-    } catch (e) { toast(f.name + ': ' + e.message, 'error'); }
+      loading(true, `Procesando capacidad (${i + 1} de ${list.length})…`, f.name);
+      const r = await parseBuffer(await f.arrayBuffer(), 'cap', m => loading(true, `Procesando capacidad (${i + 1} de ${list.length})…`, f.name + ' · ' + m), { name: f.name });
+      const k = r.kind === 'cap-bk' ? 'bk' : 'mkp';
+      cur[k] = SLCap.mergeRows(cur[k], r.rows); used[k].push(f.name);
+    } catch (e) { skipped.push(f.name); }
   }
-  loading(false); cur.at = new Date().toISOString(); delete cur._clean; S.cap = cur;
+  for (const k of ['bk', 'mkp']) if (used[k].length) cur.src[k] = { via: 'manual', at: new Date().toISOString(), last: cur[k][cur[k].length - 1][0], n: cur[k].length, files: used[k], file: used[k].join(' + ') };
+  loading(false);
+  const nOk = used.bk.length + used.mkp.length;
+  if (nOk) toast(`Capacidad: ${nOk} archivo(s) procesados${used.bk.length ? ' · Backus ' + fmt(cur.bk.length) + ' días' : ''}${used.mkp.length ? ' · MKP ' + fmt(cur.mkp.length) + ' días' : ''}${skipped.length ? ' · ' + skipped.length + ' omitido(s) sin hoja de seguimiento' : ''}`, 'ok');
+  else { toast('Ningún archivo tiene la hoja "Seguimiento" ni hojas "KPI WU MKP".', 'error'); return; }
+  cur.at = new Date().toISOString(); delete cur._clean; S.cap = cur;
   if (S.tab !== 'cap') setTab('cap'); else renderCap();
   publishKey('capacity', true);
 }
 function c5Bind() {
-  ['#capFiles', '#capFiles2'].forEach(id => { const i = $(id); if (i) i.onchange = () => { c5Ingest(i.files); i.value = ''; }; });
+  ['#capFiles', '#capFiles2', '#capDir', '#capDir0'].forEach(id => { const i = $(id); if (i) i.onchange = () => { c5Ingest(i.files); i.value = ''; }; });
   const dz = $('#capDrop'); if (dz && !dz._b) { dz._b = 1; setupDrop(dz, null, fs => c5Ingest(fs)); }
   const sb = $('#capSrcBtn'); if (sb) sb.onclick = () => { C5.srcOpen = $('#capSrcWrap').hidden; $('#capSrcWrap').hidden = !C5.srcOpen; if (C5.srcOpen) c5LoadCfg(); };
   if (C5.srcOpen && $('#capUrlBk') && !$('#capUrlBk').value) c5LoadCfg();
@@ -3352,7 +3366,7 @@ async function c5SyncNow() {
   try {
     const r = await fetch(API.base() + '?key=capsync-run', { method: 'POST', headers: { authorization: 'Bearer ' + API.key() } });
     const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
-    const res = j.status.results; C5.msg = Object.entries(res).map(([k, x]) => `<span class="${x.ok ? 'text-emerald-400' : 'text-red-400'}">${k === 'bk' ? 'Backus' : 'MKP'}: ${x.ok ? '✓ ' + fmt(x.n) + ' días al ' + fdate(x.last) : '✕ ' + esc(x.error)}</span>`).join(' · '); msg.innerHTML = C5.msg;
+    const res = j.status.results; C5.msg = Object.entries(res).map(([k, x]) => `<span class="${x.ok ? 'text-emerald-400' : 'text-red-400'}">${k === 'bk' ? 'Backus' : 'MKP'}: ${x.ok ? '✓ ' + (x.files ? x.files.length + ' archivo(s) · ' : '') + fmt(x.n) + ' días al ' + fdate(x.last) + (x.unchanged ? ' (sin cambios)' : '') : '✕ ' + esc(x.error)}</span>`).join(' · '); msg.innerHTML = C5.msg;
     msg.innerHTML = C5.msg; await loadPublished(false); if ($('#capCfgMsg')) $('#capCfgMsg').innerHTML = C5.msg;
   } catch (e) { msg.innerHTML = '<span class="text-red-400">✕ ' + esc(e.message) + '</span>'; }
 }

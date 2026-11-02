@@ -89,7 +89,12 @@ var SLCap = (function () {
     }
     throw new Error('"' + name + '" no contiene la hoja "Seguimiento" ni hojas "KPI WU MKP".');
   }
-  return { parseCapacityWorkbook: parseCapacityWorkbook, parseSeguimiento: parseSeguimiento, parseMkpSheet: parseMkpSheet, sheetPeriod: sheetPeriod };
+  /* combina filas por fecha (las del segundo arreglo reemplazan a las del primero) */
+  function mergeRows(a, b) {
+    var m = {}; (a || []).forEach(function (r) { m[r[0]] = r; }); (b || []).forEach(function (r) { m[r[0]] = r; });
+    return Object.keys(m).sort().map(function (k) { return m[k]; });
+  }
+  return { mergeRows: mergeRows, parseCapacityWorkbook: parseCapacityWorkbook, parseSeguimiento: parseSeguimiento, parseMkpSheet: parseMkpSheet, sheetPeriod: sheetPeriod };
 })();
 
 export { SLCap };

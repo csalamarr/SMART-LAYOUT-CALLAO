@@ -10,7 +10,7 @@ import { runCapSync } from './lib/capsync.mjs';
 export default async (req) => {
   const store = getStore({ name: 'smartlayout-callao', consistency: 'strong' });
   const env = { CAP_BACKUS_URL: Netlify.env.get('CAP_BACKUS_URL'), CAP_MKP_URL: Netlify.env.get('CAP_MKP_URL') };
-  return handle(req, store, Netlify.env.get('ADMIN_KEY'), { capSync: () => runCapSync(store, env) });
+  return handle(req, store, Netlify.env.get('ADMIN_KEY'), { capSync: () => runCapSync(store, env, fetch, { force: true }) });
 };
 
 export const config = { path: '/api/data' };

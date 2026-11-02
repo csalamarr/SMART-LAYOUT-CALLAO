@@ -26,13 +26,16 @@
 ## Módulo 5: capacidad de almacenamiento (se actualiza solo desde OneDrive)
 Los asistentes siguen actualizando sus dos Excel en OneDrive. El sitio los descarga **cada hora**, los procesa y publica el análisis; no hay que cargar nada.
 
-1. En OneDrive, comparte cada archivo con **Compartir → "Cualquier persona con el vínculo" → Puede ver** y copia el enlace:
-   - *Seguimiento Cap Almacenamiento Callao 2023 v1* (solo se lee la hoja "Seguimiento").
-   - *Seguimiento Cap Almacenamiento Callao MKP 2026* (todas las hojas "KPI WU MKP <MES> <AÑO>").
-2. En admin.html → **Capacidad** → **Fuentes**, pega los dos enlaces → **Guardar enlaces** → **Sincronizar ahora** para la primera carga.
+Funciona igual que el Módulo 4: una **carpeta** de OneDrive por cada seguimiento.
+1. En OneDrive crea (o usa) una carpeta para cada seguimiento, por ejemplo:
+   - `Seguimiento Capacidad Backus` → *Seguimiento Cap Almacenamiento Callao 2023 v1.xlsx* (se lee la hoja "Seguimiento").
+   - `Seguimiento Capacidad MKP` → *Seguimiento Cap Almacenamiento Callao MKP 2026.xlsx* (hojas "KPI WU MKP <MES> <AÑO>").
+   Puedes dejar varios Excel en cada carpeta (por ejemplo, uno por año): se combinan por fecha y, si una fecha se repite, manda el archivo modificado más recientemente. Los Excel que no tengan esas hojas se ignoran.
+2. Comparte cada **carpeta**: clic derecho → Compartir → "Cualquier persona con el vínculo" → Puede ver → Copiar vínculo (empieza con `https://1drv.ms/f/...`).
+3. En admin.html → **Capacidad** → **Fuentes**: pega los dos enlaces → **Guardar enlaces** → **Sincronizar ahora**.
    (Alternativa: variables de entorno `CAP_BACKUS_URL` y `CAP_MKP_URL` en Netlify.)
-3. Desde ese momento la función programada `cap-sync` corre cada hora. Las funciones programadas solo se ejecutan en sitios desplegados desde GitHub (o con la CLI); no funcionan con un despliegue de arrastrar y soltar.
-4. Si OneDrive no permite la descarga (enlace de empresa restringido), en Fuentes aparece el error. En ese caso usa **Cargar Excel manualmente**, que también publica al instante.
+4. Desde ese momento la función `cap-sync` revisa las carpetas **cada hora**. Solo vuelve a procesar y publicar cuando algún archivo cambió (nombre, tamaño o fecha de modificación). Requiere que el sitio esté desplegado desde GitHub.
+5. Si tu OneDrive es empresarial (SharePoint), las carpetas no se pueden leer sin iniciar sesión. En ese caso comparte cada archivo Excel individual (también se acepta) o usa **Carpeta local** en Fuentes y elige la carpeta sincronizada de OneDrive en tu PC: se procesa y publica al instante.
 
 Reglas del análisis:
 - La capacidad total se toma de los layouts **Normal y Peak Season** del Módulo 1 (no de la columna CAPC del Excel).
