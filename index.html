@@ -130,9 +130,108 @@
   table.abcm .a-r { text-align: right; } table.abcm .a-c { text-align: center; }
   .zona-tag { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: .82rem; letter-spacing: .03em; color: #f5b301; background: rgba(245,179,1,.08); border: 1px solid rgba(245,179,1,.25); border-radius: .35rem; padding: .05rem .4rem; }
   @media (max-width: 1023px) { body { overflow: auto; } }
+  /* Módulo 5 */
+  table.hmt { border-collapse: separate; border-spacing: 2px; }
+  table.hmt td { padding: 0; }
+  .hm { width: 15px; height: 15px; border-radius: 3px; }
+  .hm-empty { background: #111a2e; border: 1px solid #1d2a45; }
 </style>
 <!-- Parser compartido (también se ejecuta dentro de un Web Worker) -->
 <script id="sl-parser">
+/* ==========================================================================
+   SmartLayout CALLAO · Módulo 5 · Parser de capacidad de almacenamiento
+   Código puro (sin dependencias): se usa en el navegador y en Netlify Functions.
+   ========================================================================== */
+var SLCap = (function () {
+  'use strict';
+  var MES = { ENE: 1, FEB: 2, MAR: 3, ABR: 4, MAY: 5, JUN: 6, JUL: 7, AGO: 8, SET: 9, SEP: 9, OCT: 10, NOV: 11, NOM: 11, DIC: 12 };
+  function nrm(s) { return String(s == null ? '' : s).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim(); }
+  function iso(serial) { return new Date(Date.UTC(1899, 11, 30) + Math.round(serial) * 86400000).toISOString().slice(0, 10); }
+  function num(v) { return typeof v === 'number' && isFinite(v) ? v : (typeof v === 'string' && v.trim() !== '' && isFinite(+v) ? +v : null); }
+  function dim(y, m) { return new Date(Date.UTC(y, m, 0)).getUTCDate(); }
+
+  /* ---------- Backus + envases: hoja "Seguimiento" ---------- */
+  var BK_COLS = { dia: 'DIA', capTot: 'CAPACIDAD', capEnv: 'CAPC EERR', env: 'ENVASES', capPH: 'CAPC - PH', ph: 'TOTAL - PH', rtPH: 'RT - PH', nrPH: 'NRT - PH', hl: 'TOTAL - HL', capCA: 'CAPC - CA', ca: 'TOTAL - CA', rtCA: 'RT - CA', nrCA: 'NRT - CA' };
+  function parseSeguimiento(XLSX, ws) {
+    var aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+    var hr = -1, H;
+    for (var i = 0; i < Math.min(30, aoa.length); i++) { H = (aoa[i] || []).map(function (x) { return nrm(x).replace(/\s*-\s*/g, ' - '); }); if (H.indexOf('TOTAL - PH') >= 0) { hr = i; break; } }
+    if (hr < 0) throw new Error('La hoja "Seguimiento" no tiene la columna "TOTAL - PH".');
+    var c = {};
+    Object.keys(BK_COLS).forEach(function (k) { c[k] = H.indexOf(BK_COLS[k]); });
+    if (c.dia < 0) c.dia = 0;
+    var rows = [], seen = {};
+    for (var r = hr + 1; r < aoa.length; r++) {
+      var x = aoa[r]; if (!x) continue;
+      var d = num(x[c.dia]); if (!d || d < 40000 || d > 80000) continue;
+      var ph = c.ph >= 0 ? num(x[c.ph]) : null; if (ph === null || ph <= 0) continue;
+      var g = function (k) { return c[k] >= 0 ? num(x[c[k]]) : null; };
+      var day = iso(d); if (seen[day]) continue; seen[day] = 1;
+      var R = function (v, k) { return v === null ? null : Math.round(v * (k || 1)) / (k || 1); };
+      // [fecha, RT-PH, NRT-PH, TOTAL-PH, TOTAL-HL, RT-CA, NRT-CA, TOTAL-CA, ENVASES, CAPC-PH, CAPC-CA, CAPC-EERR]
+      rows.push([day, R(g('rtPH')), R(g('nrPH')), R(ph), R(g('hl'), 10), R(g('rtCA')), R(g('nrCA')), R(g('ca')), R(g('env')), g('capPH'), g('capCA'), g('capEnv')]);
+    }
+    rows.sort(function (a, b) { return a[0] < b[0] ? -1 : 1; });
+    return rows;
+  }
+
+  /* ---------- Marketplace: hojas "KPI WU MKP <MES> <AÑO>" ---------- */
+  function sheetPeriod(name) {
+    var n = nrm(name).replace(/[^A-Z0-9 ]/g, ' ');
+    var m = /(ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SET|SEP|OCT|NOV|NOM|DIC)[A-Z]*\s*(\d{2,4})?\s*$/.exec(n.replace(/\s+$/, ''));
+    if (!m) return null;
+    return { m: MES[m[1]], y: m[2] ? (+m[2] < 100 ? 2000 + +m[2] : +m[2]) : null };
+  }
+  function parseMkpSheet(XLSX, ws, name) {
+    var ref = ws['!ref']; if (!ref) return null;
+    var rg = XLSX.utils.decode_range(ref); if (rg.e.c > 60) rg.e.c = 60; if (rg.e.r > 80) rg.e.r = 80;
+    var aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, range: XLSX.utils.encode_range(rg) });
+    var hi = -1; for (var i = 0; i < aoa.length; i++) if (aoa[i] && nrm(aoa[i][0]) === 'MES') { hi = i; break; }
+    if (hi < 0) return null;
+    var row = function (re) { for (var k = hi; k < aoa.length; k++) { var x = aoa[k]; if (x && re.test(nrm(x[0]))) return x; } return null; };
+    var al = row(/^ALMACENADO/), cap = row(/^CAPACIDAD/), sk = row(/^N.?\s*SKU/), wu = row(/^WU/);
+    if (!al) return null;
+    var per = sheetPeriod(name), h = aoa[hi] || [], h2 = aoa[hi + 1] || [];
+    var cands = []; for (var j = 2; j < Math.max(h.length, al.length); j++) [h[j], h2[j]].forEach(function (v) { var s = num(v); if (s && s > 40000 && s < 80000) cands.push(iso(s)); });
+    if (per && !per.y) { // año: desde las fechas del encabezado que coincidan con el mes; si no, 2022 (inicio del registro)
+      var ys = cands.filter(function (d) { return +d.slice(5, 7) === per.m; }).map(function (d) { return +d.slice(0, 4); });
+      per.y = ys.length ? ys[0] : 2022;
+    }
+    if (!per) return null;
+    var out = [], D = dim(per.y, per.m), used = {};
+    for (var col = 2; col < al.length; col++) {
+      var v = num(al[col]); if (v === null || v <= 0) continue;
+      var day = null;
+      [h2[col], h[col]].some(function (x) { var s = num(x); if (s && s > 40000 && s < 80000) { var d = iso(s); if (+d.slice(0, 4) === per.y && +d.slice(5, 7) === per.m && !used[d]) { day = d; return true; } } return false; });
+      if (!day) { var dd = col - 1; if (dd > D) continue; day = per.y + '-' + ('0' + per.m).slice(-2) + '-' + ('0' + dd).slice(-2); if (used[day]) continue; }
+      used[day] = 1;
+      var cp = cap ? num(cap[col]) : null, s2 = sk ? num(sk[col]) : null;
+      // [fecha, almacenado, capacidad, N° SKUs]
+      out.push([day, Math.round(v), cp, s2]);
+    }
+    return { per: per, rows: out };
+  }
+
+  function parseCapacityWorkbook(XLSX, wb, name) {
+    var names = wb.SheetNames;
+    var seg = names.filter(function (n) { return nrm(n) === 'SEGUIMIENTO'; })[0];
+    if (seg) return { kind: 'cap-bk', name: name, rows: parseSeguimiento(XLSX, wb.Sheets[seg]), sheet: seg };
+    var mk = names.filter(function (n) { return /^KPI\s*WU\s*MKP/.test(nrm(n)); });
+    if (mk.length) {
+      var byDay = {}, sheets = [];
+      mk.forEach(function (n) {
+        var r = parseMkpSheet(XLSX, wb.Sheets[n], n); if (!r || !r.rows.length) return;
+        sheets.push([n.trim(), r.per.y + '-' + ('0' + r.per.m).slice(-2), r.rows.length]);
+        r.rows.forEach(function (x) { byDay[x[0]] = x; });
+      });
+      var rows = Object.keys(byDay).sort().map(function (k) { return byDay[k]; });
+      return { kind: 'cap-mkp', name: name, rows: rows, sheets: sheets };
+    }
+    throw new Error('"' + name + '" no contiene la hoja "Seguimiento" ni hojas "KPI WU MKP".');
+  }
+  return { parseCapacityWorkbook: parseCapacityWorkbook, parseSeguimiento: parseSeguimiento, parseMkpSheet: parseMkpSheet, sheetPeriod: sheetPeriod };
+})();
+
 /* ==========================================================================
    SmartLayout CALLAO · Parser de Excel (compartido Worker / Main / Node)
    Requiere: XLSX (SheetJS) y opcionalmente JSZip (para etiquetas dibujadas)
@@ -858,6 +957,13 @@ var SLParser = (function () {
     }
     progress('Leyendo estructura del libro…');
     var info = await workbookNames(JSZip, buf);
+    if (mode === 'cap') { // Módulo 5: solo las hojas de seguimiento de capacidad
+      var capSh = info.names.filter(function (n) { var u = String(n).toUpperCase().trim(); return u === 'SEGUIMIENTO' || /^KPI\s*WU\s*MKP/.test(u); });
+      if (!capSh.length) throw new Error('"' + ((opts && opts.name) || 'archivo') + '" no contiene la hoja "Seguimiento" ni hojas "KPI WU MKP".');
+      progress('Leyendo ' + capSh.length + ' hoja(s) de seguimiento…');
+      var wbC = XLSX.read(buf, { type: 'array', sheets: capSh, cellDates: false });
+      return SLCap.parseCapacityWorkbook(XLSX, wbC, (opts && opts.name) || 'archivo.xlsx');
+    }
     var out = { mode: mode, sheets: info.names };
     if (mode === 'master') {
       var visibleNames = info.names.filter(function (n, i) { return info.visible[i]; });
@@ -925,6 +1031,7 @@ if (typeof module !== 'undefined') module.exports = SLParser;
           <button class="navtab" role="tab" data-tab="daily" aria-selected="false"><i data-lucide="radar" class="w-4 h-4"></i>Layout Diario <span class="tag">Carga local</span></button>
           <button class="navtab" role="tab" data-tab="stock" aria-selected="false"><i data-lucide="search" class="w-4 h-4"></i>Buscador de Stock</button>
           <button class="navtab" role="tab" data-tab="abc" aria-selected="false"><i data-lucide="bar-chart-3" class="w-4 h-4"></i>Analítica ABC</button>
+          <button class="navtab" role="tab" data-tab="cap" aria-selected="false"><i data-lucide="gauge" class="w-4 h-4"></i>Capacidad</button>
         </div>
       </nav>
       <div class="flex items-center gap-2 flex-none ml-auto lg:ml-0">
@@ -999,6 +1106,11 @@ if (typeof module !== 'undefined') module.exports = SLParser;
     <!-- ===== MÓDULO 4: ABC ===== -->
     <section id="wsAbc" class="absolute inset-0 overflow-y-auto" hidden>
       <div class="max-w-[1400px] mx-auto p-4 lg:p-6 space-y-4" id="abcRoot"></div>
+    </section>
+
+    <!-- ===== MÓDULO 5: CAPACIDAD DE ALMACENAMIENTO ===== -->
+    <section id="wsCap" class="absolute inset-0 overflow-y-auto" hidden>
+      <div class="max-w-[1400px] mx-auto p-4 lg:p-6 space-y-4" id="capRoot"></div>
     </section>
 
     <!-- loading overlay -->
@@ -2842,6 +2954,410 @@ function bindAbcInputs() {
 if (!VIEWER && !S.abcData && Object.keys(S.abcFiles).length) S.abcData = buildAbcData();
 
 /* =========================================================================
+   MÓDULO 5 · ANÁLISIS DE CAPACIDAD DE ALMACENAMIENTO
+   Backus (PT: RT / NRT en pallets, cajas, HL) · Envases · Marketplace
+   ========================================================================= */
+const C5 = { msg: '', srcOpen: false, seg: 'bk', meas: 'ph', season: 'normal', gran: 'd', range: '90', tab: 'panel' };
+S.cap = null;
+const C5_SEG = { bk: 'Productos Backus', env: 'Envases', mkp: 'Marketplace', all: 'Vista integral' };
+const C5_MEAS = { ph: ['Pallets', 'pal'], ca: ['Cajas físicas', 'cj'], hl: ['Hectolitros', 'HL'] };
+const C5_COL = { pt: '#f5b301', ca: '#38bdf8', hl: '#a78bfa', env: '#2dd4bf', mkp: '#f472b6', rt: '#f5b301', nr: '#fb923c', cap: '#e6ebf5', capP: '#f97316' };
+const MESL = ['ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN', 'JUL', 'AGO', 'SET', 'OCT', 'NOV', 'DIC'];
+const wuTone = p => p === null || p === undefined ? '#475569' : p >= 95 ? '#ef4444' : p >= 85 ? '#f97316' : p >= 70 ? '#eab308' : '#22c55e';
+const wuLabel = p => p === null ? 'Sin dato' : p >= 100 ? 'Sobre capacidad' : p >= 95 ? 'Saturado' : p >= 85 ? 'Alerta' : p >= 70 ? 'Alto' : 'Holgado';
+
+/* ---------- capacidades de referencia (según layouts del Módulo 1) ---------- */
+function c5Caps() {
+  const tN = findTable(S.models.normal, RE.capN), tP = findTable(S.models.peak, RE.capP) || findTable(S.models.normal, RE.capP);
+  const eN = findTable(S.models.normal, RE.envN), eP = findTable(S.models.peak, RE.envP);
+  const n = tN && tN.total ? tN.total : [4385, 807347, 39012.27], p = tP && tP.total ? tP.total : [4617, 826835, 40576.45];
+  return { normal: { ph: n[0], ca: n[1], hl: n[2], env: eN && eN.total ? eN.total[0] : 712 }, peak: { ph: p[0], ca: p[1], hl: p[2], env: eP && eP.total ? eP.total[0] : 796 } };
+}
+/* ---------- limpieza y series diarias ---------- */
+function c5Clean() {
+  const D = S.cap; if (!D) return null;
+  if (D._clean) return D._clean;
+  const caps = c5Caps(), bad = [];
+  const bk = (D.bk || []).map(r => {
+    const [d, rt, nr, ph, hl, rtc, nrc, ca, env] = r;
+    let okPH = ph !== null && ph > 0 && ph <= caps.peak.ph * 2 && !(rt !== null && nr !== null && Math.abs(rt + nr - ph) > Math.max(10, ph * 0.1));
+    let okCA = ca !== null && ca > 0 && ca <= caps.peak.ca * 3 && !(rtc !== null && nrc !== null && Math.abs(rtc + nrc - ca) > Math.max(100, ca * 0.1));
+    if (!okPH) bad.push([d, 'Pallets', `RT ${fmt(rt)} + NRT ${fmt(nr)} vs TOTAL ${fmt(ph)}`]);
+    if (!okCA && ca !== null) bad.push([d, 'Cajas', `RT ${fmt(rtc)} + NRT ${fmt(nrc)} vs TOTAL ${fmt(ca)}`]);
+    return { d, rt: okPH ? rt : null, nr: okPH ? nr : null, ph: okPH ? ph : null, hl: hl && hl > 0 && hl < caps.peak.hl * 3 ? hl : null, rtc: okCA ? rtc : null, nrc: okCA ? nrc : null, ca: okCA ? ca : null, env: env !== null && env >= 0 && env < 20000 ? env : null };
+  });
+  const mkp = (D.mkp || []).map(r => ({ d: r[0], pal: r[1], cap: r[2] || 204, sku: r[3] }));
+  return (D._clean = { bk, mkp, bad, caps });
+}
+// puntos diarios del segmento/medida: { d, v, cap, rt, nr }
+function c5Points(seg, meas, season) {
+  const K = c5Clean(); if (!K) return [];
+  const cap = K.caps[season || C5.season];
+  if (seg === 'mkp') return K.mkp.map(x => ({ d: x.d, v: x.pal, cap: x.cap, sku: x.sku }));
+  if (seg === 'env') return K.bk.filter(x => x.env !== null).map(x => ({ d: x.d, v: x.env, cap: cap.env }));
+  const m = meas || C5.meas;
+  if (m === 'ph') return K.bk.filter(x => x.ph !== null).map(x => ({ d: x.d, v: x.ph, cap: cap.ph, rt: x.rt, nr: x.nr }));
+  if (m === 'ca') return K.bk.filter(x => x.ca !== null).map(x => ({ d: x.d, v: x.ca, cap: cap.ca, rt: x.rtc, nr: x.nrc }));
+  return K.bk.filter(x => x.hl !== null).map(x => ({ d: x.d, v: x.hl, cap: cap.hl }));
+}
+const c5Key = (d, g) => g === 'd' ? d : g === 'w' ? SLParser.isoWeek(d) : g === 'm' ? d.slice(0, 7) : d.slice(0, 4);
+const c5Lbl = (k, g) => g === 'd' ? k.slice(8, 10) + '/' + k.slice(5, 7) + (k.slice(0, 4) !== String(new Date().getFullYear()) ? '/' + k.slice(2, 4) : '') : g === 'w' ? 'S' + k.slice(6) + ' ' + k.slice(2, 4) : g === 'm' ? MESL[+k.slice(5, 7) - 1] + ' ' + k.slice(2, 4) : k;
+function c5Agg(pts, g) {
+  const M = new Map();
+  for (const p of pts) {
+    const k = c5Key(p.d, g); let a = M.get(k);
+    if (!a) M.set(k, a = { k, n: 0, sum: 0, max: -Infinity, min: Infinity, cap: 0, rt: 0, nr: 0, nrt: 0, d85: 0, d95: 0, maxD: null, sku: null });
+    const wu = p.cap ? p.v / p.cap * 100 : null;
+    a.n++; a.sum += p.v; a.cap += p.cap || 0; if (p.v > a.max) { a.max = p.v; a.maxD = p.d; } if (p.v < a.min) a.min = p.v;
+    if (p.rt !== null && p.rt !== undefined) { a.rt += p.rt; a.nr += p.nr || 0; a.nrt++; }
+    if (wu !== null) { if (wu >= 85) a.d85++; if (wu >= 95) a.d95++; }
+    if (p.sku) a.sku = p.sku;
+  }
+  return [...M.values()].sort((x, y) => x.k < y.k ? -1 : 1).map(a => ({ ...a, avg: a.sum / a.n, capA: a.cap / a.n, wu: a.cap ? a.sum / a.cap * 100 : null, wuMax: a.cap ? a.max / (a.cap / a.n) * 100 : null, rtA: a.nrt ? a.rt / a.nrt : null, nrA: a.nrt ? a.nr / a.nrt : null }));
+}
+function c5Range(arr, g) {
+  const R = C5.range; if (R === 'all') return arr;
+  const n = +R; if (g === 'd') { const last = arr.length ? arr[arr.length - 1].k : null; if (!last) return arr; const lim = new Date(Date.parse(last) - (n - 1) * 864e5).toISOString().slice(0, 10); return arr.filter(a => a.k >= lim); }
+  return arr.slice(-n);
+}
+/* ---------- proyección (Holt-Winters aditivo con tendencia amortiguada) ---------- */
+function c5Forecast(series, h = 6) {
+  const y = series.map(s => s.v), n = y.length; if (n < 4) return null;
+  const L = 12, a = 0.4, b = 0.08, g = 0.25, phi = 0.9;
+  const mean = arr => arr.reduce((s, v) => s + v, 0) / arr.length;
+  let level, trend, season = new Array(L).fill(0), seasonal = n >= 2 * L;
+  if (seasonal) { level = mean(y.slice(0, L)); trend = (mean(y.slice(L, 2 * L)) - level) / L; for (let i = 0; i < L; i++) season[i] = y[i] - level; }
+  else { level = y[0]; trend = (y[Math.min(n - 1, 3)] - y[0]) / Math.min(n - 1, 3); }
+  const err = [];
+  for (let t = 0; t < n; t++) {
+    const s = seasonal ? season[t % L] : 0, f = level + phi * trend + s;
+    if (t >= (seasonal ? L : 2)) err.push(y[t] - f);
+    const pl = level;
+    level = a * (y[t] - s) + (1 - a) * (level + phi * trend);
+    trend = b * (level - pl) + (1 - b) * phi * trend;
+    if (seasonal) season[t % L] = g * (y[t] - level) + (1 - g) * s;
+  }
+  const rmse = Math.sqrt(err.reduce((s, e) => s + e * e, 0) / Math.max(1, err.length));
+  const out = []; let damp = 0;
+  for (let k = 1; k <= h; k++) { damp += Math.pow(phi, k); const v = Math.max(0, level + damp * trend + (seasonal ? season[(n + k - 1) % L] : 0)); out.push({ v, lo: Math.max(0, v - 1.28 * rmse * Math.sqrt(k)), hi: v + 1.28 * rmse * Math.sqrt(k) }); }
+  return { out, rmse, method: seasonal ? 'Holt-Winters estacional (12 meses, tendencia amortiguada)' : 'Holt con tendencia amortiguada' };
+}
+function c5Monthly(pts) {
+  const m = c5Agg(pts, 'm').filter(a => a.n >= 10);
+  if (!m.length) return [];
+  // completar meses faltantes por interpolación lineal
+  const out = []; const nxt = k => { let y = +k.slice(0, 4), mm = +k.slice(5, 7) + 1; if (mm > 12) { mm = 1; y++; } return y + '-' + ('0' + mm).slice(-2); };
+  const by = new Map(m.map(a => [a.k, a]));
+  for (let k = m[0].k; k <= m[m.length - 1].k; k = nxt(k)) {
+    const a = by.get(k);
+    if (a) out.push({ k, v: a.avg, max: a.max, cap: a.capA, real: true });
+    else { const prev = out[out.length - 1]; const later = m.find(x => x.k > k); out.push({ k, v: (prev.v + later.avg) / 2, max: (prev.max + later.max) / 2, cap: prev.cap, real: false }); }
+  }
+  return out;
+}
+/* ---------- render ---------- */
+function c5Empty() {
+  return `<div class="max-w-3xl mx-auto mt-6 lg:mt-12 text-center">
+    <div class="text-[.66rem] uppercase tracking-[.18em] text-ink-400 font-semibold">Módulo 5 · Capacidad de almacenamiento</div>
+    <h1 class="font-cond text-3xl font-semibold mt-1">Análisis de capacidad <span class="text-amber">Backus · Envases · Marketplace</span></h1>
+    ${VIEWER ? `<div class="panel p-8 mt-6"><i data-lucide="clock" class="w-8 h-8 mx-auto text-amber"></i><div class="font-cond text-xl font-semibold mt-3">Información aún no publicada</div><p class="text-sm text-ink-300 mt-2">El seguimiento de capacidad se publica automáticamente desde OneDrive.</p></div>`
+      : `<label class="dropzone block p-10 mt-6 cursor-pointer" id="capDrop"><input type="file" accept=".xlsx,.xlsm" multiple class="hidden" id="capFiles" />
+      <div class="mx-auto w-14 h-14 rounded-2xl bg-ink-800 border border-ink-600 grid place-items-center text-amber mb-4"><i data-lucide="gauge" class="w-7 h-7"></i></div>
+      <div class="font-cond text-xl font-semibold">Carga los archivos de seguimiento de capacidad</div>
+      <p class="text-sm text-ink-300 mt-2 max-w-lg mx-auto"><b class="text-ink-100">Seguimiento Cap Almacenamiento Callao</b> (hoja "Seguimiento") y <b class="text-ink-100">Seguimiento Cap Almacenamiento Callao MKP</b> (hojas "KPI WU MKP …"). O configura OneDrive para que se actualice solo.</p>
+      <div class="mt-5 inline-flex btn btn-amber"><i data-lucide="upload" class="w-4 h-4"></i>Seleccionar archivos</div></label>${c5SourcesPanel()}`}
+  </div>`;
+}
+function c5SourcesPanel() {
+  const src = (S.cap && S.cap.src) || {}; const sy = LIVE.capsync;
+  const row = (k, l) => { const s = src[k]; return `<div class="flex items-center gap-2 text-xs py-1"><span class="w-2 h-2 rounded-full ${s ? 'bg-emerald-400' : 'bg-ink-500'}"></span><span class="text-ink-200 w-40">${l}</span><span class="text-ink-400">${s ? (s.via === 'onedrive' ? 'OneDrive' : 'Carga manual') + ' · datos al ' + fdate(s.last) + ' · ' + hhmm(s.at) : 'Sin datos'}</span></div>`; };
+  return `<div class="panel p-4 mt-4 text-left admin-only">
+    <div class="sect-title"><i data-lucide="cloud-cog" class="w-4 h-4"></i>Actualización automática desde OneDrive</div>
+    <p class="text-xs text-ink-400 mt-1">Pega los enlaces compartidos ("Cualquier persona con el vínculo puede ver"). El sitio los descarga cada hora y publica el análisis; los asistentes solo actualizan el Excel.</p>
+    <div class="grid md:grid-cols-2 gap-2 mt-3">
+      <label class="block"><span class="text-[.66rem] font-semibold text-ink-300 uppercase tracking-wider">Seguimiento Cap Almacenamiento Callao (Backus + envases)</span><input class="input mt-1 num text-xs" id="capUrlBk" placeholder="https://1drv.ms/x/… o https://…sharepoint.com/…" /></label>
+      <label class="block"><span class="text-[.66rem] font-semibold text-ink-300 uppercase tracking-wider">Seguimiento Cap Almacenamiento Callao MKP</span><input class="input mt-1 num text-xs" id="capUrlMkp" placeholder="https://1drv.ms/x/…" /></label>
+    </div>
+    <div class="flex flex-wrap items-center gap-2 mt-3">
+      <button class="btn btn-sm" id="capSaveCfg"><i data-lucide="save" class="w-4 h-4"></i>Guardar enlaces</button>
+      <button class="btn btn-sm btn-amber" id="capSyncNow"><i data-lucide="refresh-cw" class="w-4 h-4"></i>Sincronizar ahora</button>
+      <label class="btn btn-sm cursor-pointer"><i data-lucide="file-up" class="w-4 h-4"></i>Cargar Excel manualmente<input type="file" accept=".xlsx,.xlsm" multiple class="hidden" id="capFiles2" /></label>
+      <span class="text-xs text-ink-400" id="capCfgMsg">${C5.msg}</span>
+    </div>
+    <div class="mt-3 border-t border-ink-750 pt-2">${row('bk', 'Backus + envases')}${row('mkp', 'Marketplace')}
+      ${sy ? `<div class="text-[.7rem] text-ink-400 mt-1">Última sincronización automática: ${hhmm(sy.at)} · ${Object.entries(sy.results || {}).map(([k, r]) => (k === 'bk' ? 'Backus' : 'MKP') + ': ' + (r.ok ? '✓ ' + fmt(r.n) + ' días' : '✕ ' + esc(r.error))).join(' · ')}</div>` : ''}</div>
+  </div>`;
+}
+function renderCap() {
+  ['#ws3d', '#wsStock', '#wsAbc'].forEach(s => $(s).hidden = true); $('#wsCap').hidden = false;
+  const root = $('#capRoot');
+  if (!S.cap || (!S.cap.bk && !S.cap.mkp)) { root.innerHTML = c5Empty(); c5Bind(); icons(); return; }
+  const K = c5Clean(), caps = K.caps;
+  if (C5.seg === 'mkp' || C5.seg === 'env') C5.meas = 'ph';
+  const lastBk = K.bk.length ? K.bk[K.bk.length - 1].d : null, lastMk = K.mkp.length ? K.mkp[K.mkp.length - 1].d : null;
+  const ranges = { d: [['30', '30 días'], ['90', '90 días'], ['180', '6 meses'], ['365', '12 meses'], ['all', 'Todo']], w: [['13', '13 sem.'], ['26', '26 sem.'], ['52', '52 sem.'], ['all', 'Todo']], m: [['12', '12 meses'], ['24', '24 meses'], ['all', 'Todo']], y: [['all', 'Todos los años']] }[C5.gran];
+  if (!ranges.some(r => r[0] === C5.range)) C5.range = ranges[Math.min(1, ranges.length - 1)][0];
+  root.innerHTML = `
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div><div class="text-[.66rem] uppercase tracking-[.18em] text-ink-400 font-semibold">Módulo 5 · Capacidad de almacenamiento</div>
+      <h1 class="font-cond text-3xl font-semibold leading-tight">Análisis de capacidad <span class="text-amber">${C5_SEG[C5.seg]}</span></h1>
+      <div class="text-sm text-ink-300">Backus y envases al <b class="num text-ink-100">${fdate(lastBk)}</b> · Marketplace al <b class="num text-ink-100">${fdate(lastMk)}</b> · capacidad de referencia: layout <b class="text-ink-100">${C5.season === 'peak' ? 'Peak Season' : 'Temporada Normal'}</b></div></div>
+    <div class="flex gap-2"><button class="btn btn-sm admin-only" id="capSrcBtn"><i data-lucide="cloud-cog" class="w-4 h-4"></i>Fuentes</button><button class="btn btn-sm" id="capExport"><i data-lucide="download" class="w-4 h-4"></i>Exportar Excel</button></div>
+  </div>
+  <div id="capSrcWrap" ${C5.srcOpen ? '' : 'hidden'}>${c5SourcesPanel()}</div>
+  ${c5Tiles(K, caps)}
+  <div class="panel p-3 sticky top-0 z-10 bg-ink-850/95 backdrop-blur flex flex-wrap items-center gap-x-4 gap-y-2">
+    <div class="flex items-center gap-2 min-w-0 max-w-full"><span class="text-[.66rem] uppercase tracking-wider text-ink-400 font-semibold flex-none">Segmento</span>
+      <div class="seg overflow-x-auto max-w-full">${Object.entries(C5_SEG).map(([k, l]) => `<button data-c5="seg:${k}" aria-pressed="${C5.seg === k}">${l}</button>`).join('')}</div></div>
+    ${C5.seg === 'bk' ? `<div class="flex items-center gap-2 min-w-0 max-w-full"><span class="text-[.66rem] uppercase tracking-wider text-ink-400 font-semibold flex-none">Medida</span>
+      <div class="seg overflow-x-auto max-w-full">${Object.entries(C5_MEAS).map(([k, l]) => `<button data-c5="meas:${k}" aria-pressed="${C5.meas === k}">${l[0]}</button>`).join('')}</div></div>` : ''}
+    ${C5.seg !== 'mkp' ? `<div class="flex items-center gap-2 min-w-0 max-w-full"><span class="text-[.66rem] uppercase tracking-wider text-ink-400 font-semibold flex-none">Capacidad</span>
+      <div class="seg overflow-x-auto max-w-full"><button data-c5="season:normal" aria-pressed="${C5.season === 'normal'}">Layout Normal</button><button data-c5="season:peak" aria-pressed="${C5.season === 'peak'}">Layout Peak</button></div></div>` : ''}
+    <div class="flex items-center gap-2 min-w-0 max-w-full"><span class="text-[.66rem] uppercase tracking-wider text-ink-400 font-semibold flex-none">Vista</span>
+      <div class="seg overflow-x-auto max-w-full">${[['d', 'Diaria'], ['w', 'Semanal'], ['m', 'Mensual'], ['y', 'Anual']].map(([k, l]) => `<button data-c5="gran:${k}" aria-pressed="${C5.gran === k}">${l}</button>`).join('')}</div></div>
+    <div class="flex items-center gap-2 min-w-0 max-w-full"><span class="text-[.66rem] uppercase tracking-wider text-ink-400 font-semibold flex-none">Rango</span>
+      <div class="seg overflow-x-auto max-w-full">${ranges.map(([k, l]) => `<button data-c5="range:${k}" aria-pressed="${C5.range === k}">${l}</button>`).join('')}</div></div>
+  </div>
+  <div id="c5Body" class="space-y-4"></div>`;
+  const body = $('#c5Body');
+  if (C5.seg === 'all') c5Integral(body, K); else c5Segment(body, K);
+  icons(); c5Bind();
+}
+function c5Tile(label, val, cap, unit, wu, sub, active, seg) {
+  const t = wuTone(wu);
+  return `<button class="kpi text-left relative overflow-hidden transition ${active ? 'ring-1 ring-amber' : 'hover:border-ink-500'}" data-c5="seg:${seg}">
+    <div class="absolute inset-x-0 top-0 h-1" style="background:${t}"></div>
+    <div class="lbl">${label}</div>
+    <div class="flex items-end gap-2 mt-0.5"><div class="val">${wu === null ? '—' : fmt(wu, 1) + '%'}</div><span class="text-[.68rem] font-semibold pb-1" style="color:${t}">${wuLabel(wu)}</span></div>
+    <div class="bar mt-1.5"><i style="width:${Math.min(100, wu || 0)}%;background:${t}"></i></div>
+    <div class="sub mt-1">${fmt(val, unit === 'HL' ? 0 : 0)} / ${fmt(cap)} ${unit}${sub ? ' · ' + sub : ''}</div></button>`;
+}
+function c5Tiles(K, caps) {
+  const cap = caps[C5.season];
+  const lb = [...K.bk].reverse().find(x => x.ph !== null), lc = [...K.bk].reverse().find(x => x.ca !== null), lh = [...K.bk].reverse().find(x => x.hl !== null), le = [...K.bk].reverse().find(x => x.env !== null), lm = K.mkp[K.mkp.length - 1];
+  const ago = (arr, d, f, days) => { if (!d) return null; const lim = new Date(Date.parse(d) - days * 864e5).toISOString().slice(0, 10); const x = [...arr].reverse().find(p => p.d <= lim && f(p) !== null); return x ? f(x) : null; };
+  const dlt = (now, prev) => prev ? `${now >= prev ? '▲' : '▼'} ${fmt(Math.abs((now - prev) / prev * 100), 0)}% vs 7 días` : '';
+  return `<div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+    ${lb ? c5Tile('PT Backus · pallets', lb.ph, cap.ph, 'pal', lb.ph / cap.ph * 100, dlt(lb.ph, ago(K.bk, lb.d, x => x.ph, 7)), C5.seg === 'bk' && C5.meas === 'ph', 'bk') : ''}
+    ${lc ? c5Tile('PT Backus · cajas físicas', lc.ca, cap.ca, 'cj', lc.ca / cap.ca * 100, '', C5.seg === 'bk' && C5.meas === 'ca', 'bk') : ''}
+    ${lh ? c5Tile('PT Backus · hectolitros', lh.hl, cap.hl, 'HL', lh.hl / cap.hl * 100, '', C5.seg === 'bk' && C5.meas === 'hl', 'bk') : ''}
+    ${le ? c5Tile('Envases · pallets', le.env, cap.env, 'pal', le.env / cap.env * 100, dlt(le.env, ago(K.bk, le.d, x => x.env, 7)), C5.seg === 'env', 'env') : ''}
+    ${lm ? c5Tile('Marketplace · pallets', lm.pal, lm.cap, 'pal', lm.pal / lm.cap * 100, lm.sku ? fmt(lm.sku) + ' SKUs' : '', C5.seg === 'mkp', 'mkp') : ''}
+  </div>`;
+}
+function c5RefLines(ch, lines) { // dibuja líneas de referencia horizontales (% o capacidad) en un gráfico
+  return { id: 'ref' + Math.random(), afterDatasetsDraw(c) { const { ctx: g, chartArea: a, scales: { y } } = c; lines.forEach(([v, col, lab], i) => { const py = y.getPixelForValue(v); if (py < a.top || py > a.bottom) return; g.save(); g.setLineDash([5, 4]); g.strokeStyle = col; g.lineWidth = 1.3; g.beginPath(); g.moveTo(a.left, py); g.lineTo(a.right, py); g.stroke(); g.setLineDash([]); g.fillStyle = col; g.font = '600 10px Barlow'; const lo = lines.length > 1 && v === Math.min(...lines.map(l => l[0])); g.textAlign = lo ? 'left' : 'right'; g.fillText(lab, lo ? a.left + 4 : a.right - 4, lo ? py + 12 : py - 4); g.restore(); }); } };
+}
+const c5Axis = { ticks: { color: '#64769c', font: { family: 'JetBrains Mono', size: 10 } }, grid: { color: '#16213a' } };
+function c5Segment(body, K) {
+  const seg = C5.seg, meas = seg === 'bk' ? C5.meas : 'ph', unit = seg === 'bk' ? C5_MEAS[meas][1] : 'pal';
+  const pts = c5Points(seg, meas), all = c5Agg(pts, C5.gran), view = c5Range(all, C5.gran);
+  const caps = K.caps, capN = seg === 'mkp' ? null : caps.normal[seg === 'env' ? 'env' : meas], capP = seg === 'mkp' ? null : caps.peak[seg === 'env' ? 'env' : meas];
+  const split = seg === 'bk' && meas !== 'hl';
+  const monthly = c5Monthly(pts), fc = c5Forecast(monthly, 6);
+  const ins = c5Insights(seg, meas, pts, monthly, fc, K);
+  const dec = meas === 'hl' ? 0 : 0;
+  body.innerHTML = `
+  <div class="grid xl:grid-cols-[1.7fr_1fr] gap-4 [&>*]:min-w-0">
+    <div class="panel p-4"><div class="flex flex-wrap items-center justify-between gap-2"><div class="sect-title"><i data-lucide="chart-column" class="w-4 h-4"></i>Ocupación ${({ d: 'diaria', w: 'semanal (promedio)', m: 'mensual (promedio)', y: 'anual (promedio)' })[C5.gran]} · ${seg === 'bk' ? C5_MEAS[meas][0].toLowerCase() : 'pallets'}</div>
+      <div class="flex gap-3 text-[.68rem] text-ink-300">${split ? `<span class="flex items-center gap-1"><i class="w-2.5 h-2.5 rounded-sm inline-block" style="background:${C5_COL.rt}"></i>Retornables (RT)</span><span class="flex items-center gap-1"><i class="w-2.5 h-2.5 rounded-sm inline-block" style="background:${C5_COL.nr}"></i>No retornables (NRT)</span>` : ''}${C5.gran !== 'd' ? `<span class="flex items-center gap-1"><i class="w-3 h-0.5 inline-block bg-ink-200"></i>Pico del periodo</span>` : ''}</div></div>
+      <div class="h-80 mt-2"><canvas id="c5Main"></canvas></div></div>
+    <div class="panel p-4"><div class="sect-title mb-2"><i data-lucide="lightbulb" class="w-4 h-4"></i>Diagnóstico experto</div>
+      <div class="space-y-2.5">${ins.map(([ic, t, tone]) => `<div class="flex gap-2.5 text-[.8rem] leading-snug"><div class="w-7 h-7 rounded-md bg-ink-800 border border-ink-700 grid place-items-center flex-none" style="color:${tone || '#f5b301'}"><i data-lucide="${ic}" class="w-3.5 h-3.5"></i></div><div class="text-ink-200">${t}</div></div>`).join('')}</div></div>
+  </div>
+  <div class="grid xl:grid-cols-[1.25fr_1fr] gap-4 [&>*]:min-w-0">
+    <div class="panel p-4"><div class="flex items-center justify-between"><div class="sect-title"><i data-lucide="trending-up" class="w-4 h-4"></i>Proyección de los próximos 6 meses</div><span class="text-[.66rem] text-ink-400">${fc ? esc(fc.method) : ''}</span></div>
+      <div class="h-64 mt-2"><canvas id="c5Fc"></canvas></div>
+      ${fc ? c5FcTable(monthly, fc, capN, capP, unit, seg) : '<p class="text-sm text-ink-400 mt-2">Se necesitan al menos 4 meses con datos para proyectar.</p>'}</div>
+    <div class="panel p-4"><div class="sect-title"><i data-lucide="calendar-range" class="w-4 h-4"></i>Estacionalidad · utilización promedio por mes y año</div>
+      <div class="h-64 mt-2"><canvas id="c5Season"></canvas></div>
+      <p class="text-[.68rem] text-ink-400 mt-1">% sobre la capacidad ${seg === 'mkp' ? 'registrada en el seguimiento MKP' : 'del layout ' + (C5.season === 'peak' ? 'Peak Season' : 'Temporada Normal') + ' vigente; años anteriores son referenciales'}.</p></div>
+  </div>
+  <div class="panel p-4"><div class="flex flex-wrap items-center justify-between gap-2"><div class="sect-title"><i data-lucide="grid-3x3" class="w-4 h-4"></i>Mapa de calor de utilización diaria (últimos 24 meses)</div>
+    <div class="flex gap-2 text-[.66rem] text-ink-300">${[['< 70%', 30], ['70–85%', 75], ['85–95%', 90], ['≥ 95%', 99]].map(([l, v]) => `<span class="flex items-center gap-1"><i class="w-3 h-3 rounded-sm inline-block" style="background:${wuTone(v)}"></i>${l}</span>`).join('')}<span class="flex items-center gap-1"><i class="w-3 h-3 rounded-sm inline-block bg-ink-800 border border-ink-700"></i>sin registro</span></div></div>
+    ${c5Heatmap(pts)}</div>
+  <div class="panel overflow-hidden"><div class="px-4 pt-3 flex items-center justify-between"><div class="sect-title"><i data-lucide="table" class="w-4 h-4"></i>Resumen por periodo</div><span class="text-[.7rem] text-ink-400">${view.length} periodos</span></div>
+    <div class="overflow-auto max-h-96"><table class="abct mt-2"><thead><tr><th>Periodo</th><th class="a-r">Días</th><th class="a-r">Promedio</th><th class="a-r">Máximo</th><th class="a-r">Mínimo</th><th class="a-r">Capacidad</th><th class="a-r">% WU prom.</th><th class="a-r">% WU máx.</th>${split ? '<th class="a-r">% RT</th>' : ''}${seg === 'mkp' ? '<th class="a-r">SKUs</th>' : ''}<th class="a-r">Días ≥ 85%</th><th class="a-r">Días ≥ 95%</th><th>Estado</th></tr></thead>
+    <tbody>${view.slice().reverse().map(a => `<tr><td class="num">${c5Lbl(a.k, C5.gran)}${C5.gran === 'd' ? '' : ''}</td><td class="a-r num text-ink-400">${a.n}</td><td class="a-r num">${fmt(a.avg, dec)}</td><td class="a-r num">${fmt(a.max, dec)}</td><td class="a-r num text-ink-300">${fmt(a.min, dec)}</td><td class="a-r num text-ink-400">${fmt(a.capA, 0)}</td><td class="a-r num font-semibold" style="color:${wuTone(a.wu)}">${a.wu === null ? '—' : fmt(a.wu, 1) + '%'}</td><td class="a-r num">${a.wuMax === null ? '—' : fmt(a.wuMax, 1) + '%'}</td>${split ? `<td class="a-r num">${a.rtA === null ? '—' : fmt(a.rtA / (a.rtA + a.nrA) * 100, 0) + '%'}</td>` : ''}${seg === 'mkp' ? `<td class="a-r num">${a.sku ? fmt(a.sku) : '—'}</td>` : ''}<td class="a-r num ${a.d85 ? 'text-orange-300' : 'text-ink-500'}">${a.d85}</td><td class="a-r num ${a.d95 ? 'text-red-300' : 'text-ink-500'}">${a.d95}</td><td class="text-xs" style="color:${wuTone(a.wu)}">${wuLabel(a.wu)}</td></tr>`).join('')}</tbody></table></div></div>
+  ${c5QualityPanel(K)}`;
+  // gráfico principal
+  const labels = view.map(a => c5Lbl(a.k, C5.gran));
+  const ds = split ? [{ type: 'bar', label: 'Retornables (RT)', data: view.map(a => a.rtA), backgroundColor: C5_COL.rt, stack: 's', borderColor: '#0d1424', borderWidth: { top: 1 } }, { type: 'bar', label: 'No retornables (NRT)', data: view.map(a => a.nrA), backgroundColor: C5_COL.nr, stack: 's', borderRadius: 2 }]
+    : [{ type: 'bar', label: seg === 'mkp' ? 'Marketplace' : seg === 'env' ? 'Envases' : 'Hectolitros', data: view.map(a => a.avg), backgroundColor: seg === 'mkp' ? C5_COL.mkp : seg === 'env' ? C5_COL.env : C5_COL.hl, borderRadius: 2 }];
+  if (C5.gran !== 'd') ds.push({ type: 'line', label: 'Pico del periodo', data: view.map(a => a.max), borderColor: '#e6ebf5', borderWidth: 1.5, pointRadius: 2, tension: 0.2 });
+  if (seg === 'mkp') ds.push({ type: 'line', label: 'Capacidad MKP', data: view.map(a => a.capA), borderColor: C5_COL.capP, borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0, stepped: true });
+  if (charts.c5m) charts.c5m.destroy();
+  const refs = seg === 'mkp' ? [] : [[capN, '#e6ebf5', 'Capacidad Normal ' + fmt(capN)], [capP, C5_COL.capP, 'Capacidad Peak ' + fmt(capP)]];
+  charts.c5m = new Chart($('#c5Main'), { data: { labels, datasets: ds }, options: { maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmt(c.raw, 0)} ${unit}`, footer: it => { const a = view[it[0].dataIndex]; return a && a.wu !== null ? `Utilización ${fmt(a.wu, 1)}% · pico ${fmt(a.wuMax, 1)}%` : ''; } } } }, scales: { x: { stacked: true, ticks: { color: '#94a3c2', maxRotation: 0, autoSkip: true, maxTicksLimit: 14, font: { size: 10 } }, grid: { display: false } }, y: { ...c5Axis, stacked: split, beginAtZero: true, suggestedMax: Math.max(capP || 0, ...view.map(a => a.max)) * 1.05 } } }, plugins: [c5RefLines(null, refs)] });
+  // estacionalidad
+  const years = [...new Set(pts.map(p => p.d.slice(0, 4)))].sort().slice(-5);
+  const YC = ['#64769c', '#38bdf8', '#a78bfa', '#2dd4bf', '#f5b301'].slice(-years.length);
+  const mAgg = c5Agg(pts, 'm');
+  if (charts.c5s) charts.c5s.destroy();
+  charts.c5s = new Chart($('#c5Season'), { type: 'line', data: { labels: MESL, datasets: years.map((y, i) => ({ label: y, data: MESL.map((_, m) => { const a = mAgg.find(x => x.k === y + '-' + ('0' + (m + 1)).slice(-2)); return a && a.n >= 5 ? +a.wu.toFixed(1) : null; }), borderColor: YC[i], backgroundColor: YC[i], borderWidth: i === years.length - 1 ? 2.5 : 1.5, pointRadius: 2, spanGaps: false, tension: 0.25 })) },
+    options: { maintainAspectRatio: false, plugins: { legend: { labels: { color: '#c3cde0', boxWidth: 10, font: { size: 10 } } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmt(c.raw, 1)}%` } } }, scales: { x: { ticks: { color: '#94a3c2', font: { size: 10 } }, grid: { display: false } }, y: { ...c5Axis, beginAtZero: true, ticks: { ...c5Axis.ticks, callback: v => v + '%' } } } }, plugins: [c5RefLines(null, [[85, '#f97316', '85%'], [95, '#ef4444', '95%']])] });
+  // proyección
+  if (charts.c5f) charts.c5f.destroy();
+  if (fc) {
+    const hist = monthly.slice(-18); const nxt = k => { let y = +k.slice(0, 4), m = +k.slice(5, 7) + 1; if (m > 12) { m = 1; y++; } return y + '-' + ('0' + m).slice(-2); };
+    const fk = []; let k = monthly[monthly.length - 1].k; for (let i = 0; i < 6; i++) { k = nxt(k); fk.push(k); }
+    const lab = hist.map(h => c5Lbl(h.k, 'm')).concat(fk.map(x => c5Lbl(x, 'm')));
+    const pad = n => new Array(n).fill(null);
+    const lastV = hist[hist.length - 1].v;
+    charts.c5f = new Chart($('#c5Fc'), { type: 'line', data: { labels: lab, datasets: [
+      { label: 'Banda 80% (superior)', data: pad(hist.length - 1).concat([lastV], fc.out.map(o => o.hi)), borderColor: 'transparent', backgroundColor: 'rgba(245,179,1,.12)', pointRadius: 0, fill: '+1' },
+      { label: 'Banda 80% (inferior)', data: pad(hist.length - 1).concat([lastV], fc.out.map(o => o.lo)), borderColor: 'transparent', pointRadius: 0, fill: false },
+      { label: 'Real (promedio mensual)', data: hist.map(h => h.v).concat(pad(6)), borderColor: '#94a3c2', backgroundColor: '#94a3c2', borderWidth: 2, pointRadius: 2, tension: 0.2 },
+      { label: 'Proyección', data: pad(hist.length - 1).concat([lastV], fc.out.map(o => o.v)), borderColor: '#f5b301', backgroundColor: '#f5b301', borderDash: [6, 4], borderWidth: 2, pointRadius: 3, tension: 0.2 }] },
+      options: { maintainAspectRatio: false, plugins: { legend: { labels: { color: '#c3cde0', boxWidth: 10, font: { size: 10 }, filter: l => !/Banda/.test(l.text) } }, tooltip: { filter: i => !/Banda/.test(i.dataset.label), callbacks: { label: c => `${c.dataset.label}: ${fmt(c.raw, 0)} ${unit}` } } }, scales: { x: { ticks: { color: '#94a3c2', font: { size: 10 }, maxRotation: 0, autoSkip: true }, grid: { display: false } }, y: { ...c5Axis, beginAtZero: true, suggestedMax: (capP || Math.max(...hist.map(h => h.cap))) * 1.05 } } },
+      plugins: [c5RefLines(null, seg === 'mkp' ? [[hist[hist.length - 1].cap, C5_COL.capP, 'Capacidad MKP ' + fmt(hist[hist.length - 1].cap)]] : [[capN, '#e6ebf5', 'Normal ' + fmt(capN)], [capP, C5_COL.capP, 'Peak ' + fmt(capP)]])] });
+  }
+}
+function c5FcTable(monthly, fc, capN, capP, unit, seg) {
+  // factor pico/promedio por mes calendario (histórico)
+  const ratio = {}; monthly.filter(m => m.real && m.v > 0).forEach(m => { const k = +m.k.slice(5, 7); (ratio[k] = ratio[k] || []).push(m.max / m.v); });
+  const med = a => { const s = a.slice().sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+  const allR = Object.values(ratio).flat(); const gR = allR.length ? med(allR) : 1.15;
+  const nxt = k => { let y = +k.slice(0, 4), m = +k.slice(5, 7) + 1; if (m > 12) { m = 1; y++; } return y + '-' + ('0' + m).slice(-2); };
+  let k = monthly[monthly.length - 1].k; const capM = monthly[monthly.length - 1].cap;
+  const rows = fc.out.map(o => { k = nxt(k); const r = ratio[+k.slice(5, 7)] ? med(ratio[+k.slice(5, 7)]) : gR; return { k, v: o.v, pk: o.v * r, hi: o.hi }; });
+  return `<div class="overflow-x-auto mt-3"><table class="abct"><thead><tr><th>Mes</th><th class="a-r">Prom. proyectado</th><th class="a-r">Pico esperado</th>${seg === 'mkp' ? '<th class="a-r">% WU pico</th>' : '<th class="a-r">% pico Normal</th><th class="a-r">% pico Peak</th>'}<th>Lectura</th></tr></thead><tbody>
+    ${rows.map(r => { const wN = (seg === 'mkp' ? r.pk / capM : r.pk / capN) * 100, wP = seg === 'mkp' ? null : r.pk / capP * 100;
+      const lec = seg === 'mkp' ? (wN >= 95 ? 'Saturación: liberar o ampliar posiciones MKP' : wN >= 85 ? 'Alerta: controlar ingreso de nuevos SKUs' : 'Capacidad suficiente')
+        : wN >= 95 ? (wP >= 95 ? 'Saturación aun con Peak: prever almacenaje externo' : 'Activar layout Peak Season') : wN >= 85 ? 'Alerta: preparar layout Peak' : 'Capacidad Normal suficiente';
+      return `<tr><td class="num">${c5Lbl(r.k, 'm')}</td><td class="a-r num">${fmt(r.v, 0)} ${unit}</td><td class="a-r num">${fmt(r.pk, 0)}</td><td class="a-r num font-semibold" style="color:${wuTone(wN)}">${fmt(wN, 1)}%</td>${seg === 'mkp' ? '' : `<td class="a-r num" style="color:${wuTone(wP)}">${fmt(wP, 1)}%</td>`}<td class="text-xs" style="color:${wuTone(wN)}">${lec}</td></tr>`; }).join('')}
+  </tbody></table></div><p class="text-[.66rem] text-ink-400 mt-1">Pico esperado = promedio proyectado × relación pico/promedio histórica del mismo mes. Banda de confianza del 80%.</p>`;
+}
+function c5Heatmap(pts) {
+  const by = new Map(pts.map(p => [p.d, p])); if (!pts.length) return '';
+  const last = pts[pts.length - 1].d; let y = +last.slice(0, 4), m = +last.slice(5, 7);
+  const months = []; for (let i = 0; i < 24; i++) { months.unshift(y + '-' + ('0' + m).slice(-2)); m--; if (m < 1) { m = 12; y--; } }
+  const head = `<tr><th class="sticky left-0 bg-ink-850 z-[1]"></th>${Array.from({ length: 31 }, (_, i) => `<th class="text-[.58rem] text-ink-500 font-normal px-0">${i + 1}</th>`).join('')}<th class="text-[.6rem] text-ink-400 font-semibold pl-2 text-right">Prom.</th></tr>`;
+  const rows = months.map(ym => { const dm = new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7), 0)).getUTCDate(); const vals = [];
+    const cells = Array.from({ length: 31 }, (_, i) => { if (i >= dm) return '<td></td>'; const d = ym + '-' + ('0' + (i + 1)).slice(-2); const p = by.get(d); if (!p) return `<td><div class="hm hm-empty" title="${fdate(d)}: sin registro"></div></td>`; const w = p.v / p.cap * 100; vals.push(w);
+      return `<td><div class="hm" style="background:${wuTone(w)};opacity:${0.35 + Math.min(0.65, w / 150)}" title="${fdate(d)}: ${fmt(p.v)} (${fmt(w, 1)}%)"></div></td>`; }).join('');
+    const avg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    return `<tr><th class="sticky left-0 bg-ink-850 z-[1] text-[.66rem] text-ink-300 font-semibold pr-2 text-left whitespace-nowrap">${c5Lbl(ym, 'm')}</th>${cells}<td class="num text-[.66rem] pl-2 text-right" style="color:${wuTone(avg)}">${avg === null ? '—' : fmt(avg, 0) + '%'}</td></tr>`; }).join('');
+  return `<div class="overflow-x-auto mt-3"><table class="hmt"><thead>${head}</thead><tbody>${rows}</tbody></table></div>`;
+}
+function c5Insights(seg, meas, pts, monthly, fc, K) {
+  const out = []; if (!pts.length) return out;
+  const unit = seg === 'bk' ? C5_MEAS[meas][1] : 'pal';
+  const last = pts[pts.length - 1], wuL = last.v / last.cap * 100;
+  const since = (days) => { const lim = new Date(Date.parse(last.d) - (days - 1) * 864e5).toISOString().slice(0, 10); return pts.filter(p => p.d >= lim); };
+  const avg = a => a.length ? a.reduce((s, p) => s + p.v, 0) / a.length : null;
+  const l30 = since(30), a30 = avg(l30);
+  const ly = pts.filter(p => p.d >= new Date(Date.parse(last.d) - 394 * 864e5).toISOString().slice(0, 10) && p.d <= new Date(Date.parse(last.d) - 365 * 864e5).toISOString().slice(0, 10)), aly = avg(ly);
+  const today = new Date().toISOString().slice(0, 10), stale = Math.round((Date.parse(today) - Date.parse(last.d)) / 864e5);
+  out.push(['gauge', `<b>Situación al ${fdate(last.d)}:</b> ${fmt(last.v)} ${unit} almacenados, <b style="color:${wuTone(wuL)}">${fmt(wuL, 1)}%</b> de la capacidad (${wuLabel(wuL).toLowerCase()}). Holgura: <b>${fmt(Math.max(0, last.cap - last.v))} ${unit}</b>.`, wuTone(wuL)]);
+  if (stale > 2) out.push(['clock-alert', `El último registro tiene <b>${stale} días</b> de antigüedad: verificar que el seguimiento esté al día en OneDrive.`, '#f97316']);
+  if (aly) { const v = (a30 - aly) / aly * 100; out.push([v >= 0 ? 'trending-up' : 'trending-down', `Promedio de los últimos 30 días: <b>${fmt(a30)} ${unit}</b>, <b>${v >= 0 ? '+' : ''}${fmt(v, 1)}%</b> frente al mismo periodo del año anterior (${fmt(aly)}).`]); }
+  const l90 = since(90), d85 = l90.filter(p => p.v / p.cap >= 0.85).length, d95 = l90.filter(p => p.v / p.cap >= 0.95).length;
+  out.push(['flame', `En los últimos 90 días: <b>${d85} días ≥ 85%</b> y <b>${d95} días ≥ 95%</b> de utilización${d95 ? ' — riesgo operativo de congestión en pasillos y recepción.' : '.'}`, d95 ? '#ef4444' : d85 ? '#f97316' : '#22c55e']);
+  const pk = pts.reduce((m, p) => p.v > m.v ? p : m, pts[0]);
+  out.push(['mountain', `Pico histórico: <b>${fmt(pk.v)} ${unit}</b> el ${fdate(pk.d)} (${fmt(pk.v / pk.cap * 100, 1)}% de la capacidad de referencia).`]);
+  const byCal = {}; monthly.filter(m => m.real).forEach(m => { const k = +m.k.slice(5, 7); (byCal[k] = byCal[k] || []).push(m.v / m.cap * 100); });
+  const calAvg = Object.entries(byCal).map(([k, a]) => [+k, a.reduce((s, v) => s + v, 0) / a.length]).sort((a, b) => b[1] - a[1]);
+  if (calAvg.length >= 6) out.push(['calendar-days', `Estacionalidad: los meses de mayor ocupación son <b>${calAvg.slice(0, 2).map(c => MESL[c[0] - 1]).join(' y ')}</b> (${fmt(calAvg[0][1], 0)}% prom.) y el más bajo <b>${MESL[calAvg[calAvg.length - 1][0] - 1]}</b> (${fmt(calAvg[calAvg.length - 1][1], 0)}%). Planificar inventarios y personal según esta curva.`]);
+  if (seg === 'bk' && meas !== 'hl') {
+    const rt = l30.filter(p => p.rt !== null), rtNow = rt.length ? rt.reduce((s, p) => s + p.rt, 0) / rt.reduce((s, p) => s + p.v, 0) * 100 : null;
+    const ly2 = ly.filter(p => p.rt !== null), rtLy = ly2.length ? ly2.reduce((s, p) => s + p.rt, 0) / ly2.reduce((s, p) => s + p.v, 0) * 100 : null;
+    if (rtNow !== null) out.push(['split', `Mix actual: <b>${fmt(rtNow, 0)}% retornables</b> / ${fmt(100 - rtNow, 0)}% no retornables${rtLy !== null ? ` (hace un año: ${fmt(rtLy, 0)}% RT)` : ''}. Los RT ocupan más piso por caja y requieren retorno de envase: un mix con más RT presiona la capacidad en pallets y en envases.`]);
+    const den = K.bk.filter(x => x.ph && x.ca).slice(-30); if (den.length) { const cpp = den.reduce((s, x) => s + x.ca, 0) / den.reduce((s, x) => s + x.ph, 0); out.push(['boxes', `Densidad: <b>${fmt(cpp, 0)} cajas por pallet</b> en los últimos 30 días; una baja en este indicador significa pallets incompletos o mix de formatos grandes, que consume posiciones sin aumentar volumen.`]); }
+  }
+  if (fc) { const capN = seg === 'mkp' ? monthly[monthly.length - 1].cap : K.caps.normal[seg === 'env' ? 'env' : meas], mx = Math.max(...fc.out.map(o => o.v)); const w = mx / capN * 100;
+    out.push(['telescope', `Proyección 6 meses: el promedio mensual llegaría hasta <b>${fmt(mx)} ${unit}</b> (${fmt(w, 0)}% de la capacidad ${seg === 'mkp' ? 'MKP' : 'Normal'}). ${w >= 90 ? 'Se recomienda preparar la habilitación del layout Peak Season con anticipación.' : w < 55 && seg === 'bk' ? 'Holgura estructural: oportunidad de reasignar posiciones de PT a Marketplace o envases, consolidar galpones o reducir alquiler de espacio.' : 'Capacidad suficiente con el layout vigente.'}`, w >= 90 ? '#f97316' : '#38bdf8']); }
+  if (seg === 'bk' || seg === 'env') { const mk = K.mkp.slice(-30); if (mk.length) { const wm = mk.reduce((s, x) => s + x.pal / x.cap, 0) / mk.length * 100; const wb = seg === 'bk' ? wuL : null; if (wm >= 85 && wb !== null && wb < 60) out.push(['arrow-left-right', `Desbalance: Marketplace opera al <b>${fmt(wm, 0)}%</b> mientras PT Backus está al ${fmt(wb, 0)}%. Evaluar ceder posiciones de PT a MKP para evitar saturación de ese portafolio.`, '#a78bfa']); } }
+  if (seg === 'env') { const over = l90.filter(p => p.v > p.cap).length; const cv = (() => { const v = l90.map(p => p.v), m = v.reduce((a, b) => a + b, 0) / v.length; return Math.sqrt(v.reduce((a, b) => a + (b - m) ** 2, 0) / v.length) / m; })(); out.push(['recycle', `Envases: <b>${over} días sobre la capacidad</b> en los últimos 90 días y variabilidad ${cv > 0.35 ? 'alta' : 'moderada'} (CV ${fmt(cv, 2)}). ${over ? 'Programar clasificación y retiro de envases a planta antes de los picos.' : ''}`, over ? '#ef4444' : '#2dd4bf']); }
+  if (seg === 'mkp') { const s = K.mkp.filter(x => x.sku); if (s.length > 20) { const f = s[0], l = s[s.length - 1]; out.push(['package-plus', `SKUs Marketplace: de <b>${fmt(f.sku)}</b> (${fdate(f.d)}) a <b>${fmt(l.sku)}</b> (${fdate(l.d)}), ${fmt((l.sku - f.sku) / f.sku * 100, 0)}% más con capacidad de ${fmt(l.cap)} pallets: ${fmt(l.cap / l.sku, 2)} pallets por SKU. Priorizar devolución de códigos de baja rotación y envío de pallets a HUB.`, '#f472b6']); } }
+  return out;
+}
+function c5QualityPanel(K) {
+  const bk = K.bk; if (!bk.length) return '';
+  const months = {}; bk.forEach(x => { const k = x.d.slice(0, 7); months[k] = (months[k] || 0) + 1; });
+  const gaps = Object.entries(months).filter(([k, n]) => n < 15 && k !== bk[bk.length - 1].d.slice(0, 7)).map(([k, n]) => c5Lbl(k, 'm') + ' (' + n + ' días)');
+  const hl0 = bk.find(x => x.hl !== null);
+  return `<details class="panel p-4"><summary class="cursor-pointer sect-title list-none"><i data-lucide="shield-check" class="w-4 h-4"></i>Calidad de datos del seguimiento (${K.bad.length} registros excluidos)</summary>
+    <div class="grid md:grid-cols-2 gap-4 mt-3 text-xs text-ink-300">
+      <div><div class="text-ink-100 font-semibold mb-1">Registros excluidos del análisis</div>${K.bad.length ? `<table class="abct"><tbody>${K.bad.slice(0, 20).map(b => `<tr><td class="num">${fdate(b[0])}</td><td>${b[1]}</td><td class="text-ink-400">${esc(b[2])}</td></tr>`).join('')}</tbody></table>` : 'Ninguno'}</div>
+      <div class="space-y-1.5"><div class="text-ink-100 font-semibold">Observaciones</div>
+        <div>• Meses con registro incompleto: ${gaps.length ? gaps.join(', ') : 'ninguno'}.</div>
+        <div>• Hectolitros (TOTAL - HL) disponibles desde ${hl0 ? fdate(hl0.d) : '—'}.</div>
+        <div>• Se usa la capacidad de los layouts del Módulo 1; la columna "CAPC" del Excel (${fmt((S.cap.bk || []).slice(-1)[0] ? S.cap.bk.slice(-1)[0][9] : null)} pal) se muestra solo como referencia.</div>
+        <div>• Marketplace: el mes y año de cada hoja "KPI WU MKP" se toman de su nombre (hay hojas copiadas con fechas de otro mes en el encabezado).</div></div></div></details>`;
+}
+function c5Integral(body, K) {
+  const g = C5.gran === 'd' ? 'w' : C5.gran; const gl = { w: 'semanal', m: 'mensual', y: 'anual' }[g];
+  const S5 = [['pt', 'PT Backus · pallets', c5Points('bk', 'ph')], ['ca', 'PT Backus · cajas', c5Points('bk', 'ca')], ['hl', 'PT Backus · HL', c5Points('bk', 'hl')], ['env', 'Envases', c5Points('env')], ['mkp', 'Marketplace', c5Points('mkp')]];
+  const aggs = S5.map(([k, l, p]) => [k, l, c5Agg(p, g)]);
+  const keys = [...new Set(aggs.flatMap(a => a[2].map(x => x.k)))].sort();
+  const view = C5.range === 'all' ? keys : keys.slice(-(+C5.range || 26));
+  body.innerHTML = `
+  <div class="panel p-4"><div class="sect-title"><i data-lucide="activity" class="w-4 h-4"></i>Utilización comparada · promedio ${gl} (% de capacidad)</div><div class="h-80 mt-2"><canvas id="c5Int"></canvas></div>
+    <p class="text-[.68rem] text-ink-400 mt-1">Backus y envases sobre el layout ${C5.season === 'peak' ? 'Peak Season' : 'Temporada Normal'}; Marketplace sobre su capacidad registrada. Líneas de referencia en 85% (alerta) y 95% (saturación).</p></div>
+  <div class="panel overflow-hidden"><div class="px-4 pt-3 sect-title"><i data-lucide="table" class="w-4 h-4"></i>Matriz de utilización por segmento</div>
+    <div class="overflow-auto max-h-[28rem]"><table class="abct mt-2"><thead><tr><th>Periodo</th>${aggs.map(a => `<th class="a-r">${a[1]}</th>`).join('')}</tr></thead>
+    <tbody>${view.slice().reverse().map(k => `<tr><td class="num">${c5Lbl(k, g)}</td>${aggs.map(a => { const x = a[2].find(y => y.k === k); return `<td class="a-r num" style="color:${wuTone(x ? x.wu : null)}">${x ? fmt(x.wu, 1) + '%' : '—'}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div></div>
+  ${c5QualityPanel(K)}`;
+  if (charts.c5i) charts.c5i.destroy();
+  charts.c5i = new Chart($('#c5Int'), { type: 'line', data: { labels: view.map(k => c5Lbl(k, g)), datasets: aggs.map(([k, l, a]) => ({ label: l, data: view.map(v => { const x = a.find(y => y.k === v); return x ? +x.wu.toFixed(1) : null; }), borderColor: C5_COL[k], backgroundColor: C5_COL[k], borderWidth: 2, pointRadius: g === 'y' ? 4 : 1.5, tension: 0.25, spanGaps: true })) },
+    options: { maintainAspectRatio: false, interaction: { mode: 'index', intersect: false }, plugins: { legend: { labels: { color: '#c3cde0', boxWidth: 10, font: { size: 11 } } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmt(c.raw, 1)}%` } } }, scales: { x: { ticks: { color: '#94a3c2', maxRotation: 0, autoSkip: true, maxTicksLimit: 16, font: { size: 10 } }, grid: { display: false } }, y: { ...c5Axis, beginAtZero: true, ticks: { ...c5Axis.ticks, callback: v => v + '%' } } } }, plugins: [c5RefLines(null, [[85, '#f97316', '85% alerta'], [95, '#ef4444', '95% saturación']])] });
+}
+function c5Export() {
+  const K = c5Clean(); if (!K) return;
+  const wb = XLSX.utils.book_new(), caps = K.caps[C5.season];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(K.bk.map(x => ({ Fecha: x.d, 'RT - PH': x.rt, 'NRT - PH': x.nr, 'TOTAL - PH': x.ph, '% WU PH': x.ph ? +(x.ph / caps.ph * 100).toFixed(2) : null, 'TOTAL - HL': x.hl, '% WU HL': x.hl ? +(x.hl / caps.hl * 100).toFixed(2) : null, 'RT - CA': x.rtc, 'NRT - CA': x.nrc, 'TOTAL - CA': x.ca, '% WU CA': x.ca ? +(x.ca / caps.ca * 100).toFixed(2) : null, 'Envases (pal)': x.env, '% WU Envases': x.env !== null ? +(x.env / caps.env * 100).toFixed(2) : null }))), 'Backus y envases');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(K.mkp.map(x => ({ Fecha: x.d, 'Almacenado (pal)': x.pal, 'Capacidad (pal)': x.cap, '% WU': +(x.pal / x.cap * 100).toFixed(2), 'N° SKUs': x.sku }))), 'Marketplace');
+  XLSX.writeFile(wb, `Capacidad_CD_Callao_${C5.season}.xlsx`);
+}
+/* ---------- ingesta y publicación (admin) ---------- */
+async function c5Ingest(files) {
+  if (VIEWER) return;
+  const list = [...files].filter(f => /\.xls[xmb]?$/i.test(f.name)); if (!list.length) return;
+  const cur = S.cap || { v: 1, bk: null, mkp: null, src: {} }; cur.src = cur.src || {};
+  for (const f of list) {
+    try {
+      loading(true, 'Procesando capacidad…', f.name);
+      const r = await parseBuffer(await f.arrayBuffer(), 'cap', m => loading(true, 'Procesando capacidad…', f.name + ' · ' + m), { name: f.name });
+      const k = r.kind === 'cap-bk' ? 'bk' : 'mkp'; cur[k] = r.rows; cur.src[k] = { via: 'manual', at: new Date().toISOString(), last: r.rows.length ? r.rows[r.rows.length - 1][0] : null, n: r.rows.length, file: f.name };
+      toast(`${f.name}: ${fmt(r.rows.length)} días procesados`, 'ok');
+    } catch (e) { toast(f.name + ': ' + e.message, 'error'); }
+  }
+  loading(false); cur.at = new Date().toISOString(); delete cur._clean; S.cap = cur;
+  if (S.tab !== 'cap') setTab('cap'); else renderCap();
+  publishKey('capacity', true);
+}
+function c5Bind() {
+  ['#capFiles', '#capFiles2'].forEach(id => { const i = $(id); if (i) i.onchange = () => { c5Ingest(i.files); i.value = ''; }; });
+  const dz = $('#capDrop'); if (dz && !dz._b) { dz._b = 1; setupDrop(dz, null, fs => c5Ingest(fs)); }
+  const sb = $('#capSrcBtn'); if (sb) sb.onclick = () => { C5.srcOpen = $('#capSrcWrap').hidden; $('#capSrcWrap').hidden = !C5.srcOpen; if (C5.srcOpen) c5LoadCfg(); };
+  if (C5.srcOpen && $('#capUrlBk') && !$('#capUrlBk').value) c5LoadCfg();
+  if ($('#capUrlBk') && !$('#capSrcWrap')) c5LoadCfg();
+  const sv = $('#capSaveCfg'); if (sv) sv.onclick = c5SaveCfg;
+  const sn = $('#capSyncNow'); if (sn) sn.onclick = c5SyncNow;
+  const ex = $('#capExport'); if (ex) ex.onclick = c5Export;
+}
+async function c5LoadCfg() {
+  if (VIEWER || !API.key()) return;
+  try { const r = await fetch(API.base() + '?key=capcfg', { headers: { authorization: 'Bearer ' + API.key() }, cache: 'no-store' }); if (r.ok && (r.headers.get('content-type') || '').includes('octet')) { const c = await API.ungz(await r.arrayBuffer()); if ($('#capUrlBk')) $('#capUrlBk').value = c.bk || ''; if ($('#capUrlMkp')) $('#capUrlMkp').value = c.mkp || ''; } } catch (e) {}
+}
+async function c5SaveCfg() {
+  const msg = $('#capCfgMsg'); if (!API.key()) { msg.innerHTML = '<span class="text-red-400">Configura primero la clave de publicación (botón Publicar).</span>'; return false; }
+  try { await API.put('capcfg', { bk: $('#capUrlBk').value.trim(), mkp: $('#capUrlMkp').value.trim(), at: new Date().toISOString() }, 'enlaces'); msg.innerHTML = '<span class="text-emerald-400">✓ Enlaces guardados en el sitio. La sincronización automática corre cada hora.</span>'; return true; }
+  catch (e) { msg.innerHTML = '<span class="text-red-400">✕ ' + esc(e.message) + '</span>'; return false; }
+}
+async function c5SyncNow() {
+  const msg = $('#capCfgMsg'); if (!(await c5SaveCfg())) return;
+  msg.textContent = 'Descargando desde OneDrive y procesando…';
+  try {
+    const r = await fetch(API.base() + '?key=capsync-run', { method: 'POST', headers: { authorization: 'Bearer ' + API.key() } });
+    const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+    const res = j.status.results; C5.msg = Object.entries(res).map(([k, x]) => `<span class="${x.ok ? 'text-emerald-400' : 'text-red-400'}">${k === 'bk' ? 'Backus' : 'MKP'}: ${x.ok ? '✓ ' + fmt(x.n) + ' días al ' + fdate(x.last) : '✕ ' + esc(x.error)}</span>`).join(' · '); msg.innerHTML = C5.msg;
+    msg.innerHTML = C5.msg; await loadPublished(false); if ($('#capCfgMsg')) $('#capCfgMsg').innerHTML = C5.msg;
+  } catch (e) { msg.innerHTML = '<span class="text-red-400">✕ ' + esc(e.message) + '</span>'; }
+}
+
+/* =========================================================================
    NAVEGACIÓN, DRAG & DROP, EVENTOS GLOBALES
    ========================================================================= */
 function setTab(tab) {
@@ -2849,6 +3365,8 @@ function setTab(tab) {
   $$('#nav [data-tab]').forEach(b => b.setAttribute('aria-selected', b.dataset.tab === tab));
   closeFicha();
   try { history.replaceState(null, '', '#' + tab); } catch (e) {}
+  $('#wsCap').hidden = tab !== 'cap';
+  if (tab === 'cap') { renderCap(); return; }
   if (tab === 'stock') renderStock(); else if (tab === 'abc') renderAbc(); else render3D();
 }
 function setupDrop(el, cb, multi) {
@@ -2860,7 +3378,7 @@ function bindDrops(root) { $$('[data-drop="daily"]', root).forEach(el => { if (!
 bindDrops(document);
 // soltar el archivo diario en cualquier parte de la ventana
 window.addEventListener('dragover', e => e.preventDefault());
-window.addEventListener('drop', e => { e.preventDefault(); if (VIEWER) return; const f = e.dataTransfer && e.dataTransfer.files[0]; if (!f) return; if (S.tab === 'abc') ingestAbcFiles(e.dataTransfer.files); else loadDaily(f); });
+window.addEventListener('drop', e => { e.preventDefault(); if (VIEWER) return; const f = e.dataTransfer && e.dataTransfer.files[0]; if (!f) return; if (S.tab === 'abc') ingestAbcFiles(e.dataTransfer.files); else if (S.tab === 'cap') c5Ingest(e.dataTransfer.files); else loadDaily(f); });
 
 document.addEventListener('change', e => {
   const t = e.target;
@@ -2868,6 +3386,8 @@ document.addEventListener('change', e => {
   if (t.matches('[data-master-file]') && t.files[0]) { loadLocalMaster(t.dataset.masterFile, t.files[0]); t.value = ''; }
 });
 document.addEventListener('click', e => {
+  const c5 = e.target.closest('[data-c5]');
+  if (c5) { const [k, v] = c5.dataset.c5.split(':'); C5[k] = v; renderCap(); return; }
   const a4 = e.target.closest('[data-a4]');
   if (a4) { const [k, v] = a4.dataset.a4.split(':'); A4[k] = k === 'metric' ? +v : v; if (k === 'gran') A4.period = null; if (k === 'port') A4.fam = ''; renderAbc(); return; }
   const t = e.target.closest('[data-tab],[data-goto],[data-cam],[data-lvl],[data-cm],[data-cd],[data-zone],[data-rec],[data-sync],[data-locate],[data-close]');
@@ -2966,30 +3486,33 @@ function applyAbc(p) {
   else { for (const [n, f] of Object.entries(p.files)) { const loc = S.abcFiles[n]; if (!loc || (f.loadedAt || '') > (loc.loadedAt || '')) S.abcFiles[n] = f; } persistAbc(); }
   S.abcData = buildAbcData();
 }
+function applyCapacity(p) { if (!p || (!p.bk && !p.mkp)) return; S.cap = { v: 1, at: p.at, bk: p.bk || null, mkp: p.mkp || null, src: p.src || {} }; }
 async function loadPublished(first) {
   let meta;
   try { meta = await API.meta(); LIVE.available = true; }
   catch (e) { LIVE.available = false; liveBadge(); return false; }
   const changed = [];
-  for (const k of ['layouts', 'daily', 'abc']) {
+  if (!VIEWER && meta.capsync && (!LIVE.meta.capsync || LIVE.meta.capsync.updatedAt !== meta.capsync.updatedAt)) { try { const r = await API.get('capsync'); if (r) LIVE.capsync = r.data; } catch (e) {} }
+  for (const k of ['layouts', 'daily', 'abc', 'capacity']) {
     const m = meta[k]; if (!m) continue;
     const prev = LIVE.meta[k]; if (!first && prev && prev.updatedAt === m.updatedAt) continue;
     if (!VIEWER && first && k === 'daily' && S.dailySrc === 'local') continue;
-    try { const r = await API.get(k); if (!r) continue; if (k === 'layouts') applyLayouts(r.data, m.updatedAt); else if (k === 'daily') applyDaily(r.data, m.updatedAt); else applyAbc(r.data); changed.push(k); }
+    try { const r = await API.get(k); if (!r) continue; if (k === 'layouts') applyLayouts(r.data, m.updatedAt); else if (k === 'daily') applyDaily(r.data, m.updatedAt); else if (k === 'capacity') applyCapacity(r.data); else applyAbc(r.data); changed.push(k); }
     catch (e) { console.warn('No se pudo leer', k, e); }
   }
   LIVE.meta = meta; liveBadge();
-  if (changed.length) { setTab(S.tab); if (!first) toast('Información actualizada: ' + changed.map(k => ({ layouts: 'layouts maestros', daily: 'cierre diario', abc: 'análisis ABC' })[k]).join(', '), 'ok'); }
+  if (changed.length) { setTab(S.tab); if (!first) toast('Información actualizada: ' + changed.map(k => ({ layouts: 'layouts maestros', daily: 'cierre diario', abc: 'análisis ABC', capacity: 'capacidad de almacenamiento' })[k]).join(', '), 'ok'); }
   return true;
 }
 function startLivePolling() { clearInterval(LIVE.timer); LIVE.timer = setInterval(() => { if (document.visibilityState === 'visible') loadPublished(false); }, 300000); }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && LIVE.available) loadPublished(false); });
 
 /* publicar (solo admin) */
-const PUB_LABEL = { daily: 'Cierre diario (Módulos 2 y 3)', abc: 'Análisis ABC (Módulo 4)', layouts: 'Layouts maestros (Módulo 1)' };
+const PUB_LABEL = { daily: 'Cierre diario (Módulos 2 y 3)', abc: 'Análisis ABC (Módulo 4)', layouts: 'Layouts maestros (Módulo 1)', capacity: 'Capacidad de almacenamiento (Módulo 5)' };
 function packageOf(k) {
   if (k === 'daily') return S.models.daily ? [{ layout: S.models.daily, stock: S.stock, file: S.dailyFile, at: new Date().toISOString() }, S.dailyFile] : null;
   if (k === 'abc') return Object.keys(S.abcFiles || {}).length ? [{ files: S.abcFiles, at: new Date().toISOString() }, Object.keys(S.abcFiles).length + ' archivos'] : null;
+  if (k === 'capacity') return S.cap && (S.cap.bk || S.cap.mkp) ? [{ v: 1, at: new Date().toISOString(), bk: S.cap.bk, mkp: S.cap.mkp, src: S.cap.src || {} }, Object.values(S.cap.src || {}).map(s => s.file || (s.via === 'onedrive' ? 'OneDrive' : '')).filter(Boolean).join(' + ') || 'Seguimiento de capacidad'] : null;
   if (k === 'layouts') return [{ normal: S.models.normal, peak: S.models.peak, at: new Date().toISOString() }, [S.src.normal && S.src.normal.name, S.src.peak && S.src.peak.name].filter(Boolean).join(' + ')];
 }
 async function publishKey(k, silent) {
@@ -3021,7 +3544,7 @@ function openPublish() {
       <label class="block"><span class="text-xs font-semibold text-ink-300 uppercase tracking-wider">URL del sitio (opcional)</span><input class="input mt-1 num text-xs" id="pubSite" value="${esc(site)}" placeholder="https://tu-sitio.netlify.app" /></label>
     </div>
     <div class="flex flex-wrap items-center gap-2 mt-2"><button class="btn btn-sm" id="pubTest"><i data-lucide="key-round" class="w-4 h-4"></i>Guardar y probar clave</button><span class="text-xs text-ink-400" id="pubTestMsg"></span></div>
-    <div class="mt-4 panel !bg-ink-900 px-3">${['daily', 'abc', 'layouts'].map(row).join('')}</div>
+    <div class="mt-4 panel !bg-ink-900 px-3">${['daily', 'abc', 'capacity', 'layouts'].map(row).join('')}</div>
     <div class="text-xs text-ink-400 mt-2" id="pubState"></div>
     <details class="mt-3 text-xs text-ink-400"><summary class="cursor-pointer hover:text-ink-200">Respaldo sin servicio de datos: descargar un index.html con los datos incluidos</summary>
       <div class="mt-2 space-y-1.5" id="pubOpts">
@@ -3088,7 +3611,7 @@ if (S.dailySrc === 'publicado' && S.stock && S.stock.meta && S.stock.meta.fecha)
 const initial = (location.hash || '').slice(1);
 // esperar las fuentes para que los rótulos 3D se dibujen nítidos con la tipografía correcta
 await Promise.race([Promise.all([document.fonts.load('700 64px "Barlow Condensed"'), document.fonts.load('600 16px Barlow')]).catch(() => {}), new Promise(r => setTimeout(r, 2500))]);
-S.tab = ['normal', 'peak', 'daily', 'stock', 'abc'].includes(initial) ? initial : 'normal';
+S.tab = ['normal', 'peak', 'daily', 'stock', 'abc', 'cap'].includes(initial) ? initial : 'normal';
 // cargar la información publicada en la web (servicio de datos de Netlify)
 loading(true, 'Cargando información publicada…', 'SmartLayout CALLAO');
 await Promise.race([loadPublished(true), new Promise(r => setTimeout(r, 12000))]);
@@ -3096,7 +3619,7 @@ loading(false);
 setTab(S.tab);
 startLivePolling();
 if (CONFIG.onedrive.daily) syncDaily(true);
-window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (h !== S.tab && ['normal', 'peak', 'daily', 'stock', 'abc'].includes(h)) setTab(h); });
+window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (h !== S.tab && ['normal', 'peak', 'daily', 'stock', 'abc', 'cap'].includes(h)) setTab(h); });
 if (CONFIG.autoSync) { (async () => { for (const k of ['normal', 'peak']) if (CONFIG.onedrive[k]) await syncMaster(k, true); })(); }
 window.SmartLayout = { S, viewer, loadDaily, syncMaster, CONFIG, LIVE, API, refresh: () => loadPublished(false) };
 </script>

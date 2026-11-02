@@ -1,11 +1,12 @@
 // SmartLayout CALLAO · lógica del servicio de datos (independiente de Netlify para poder probarla)
 import { timingSafeEqual } from 'node:crypto';
 
-export const KEYS = ['daily', 'abc', 'layouts'];
+export const KEYS = ['daily', 'abc', 'layouts', 'capacity', 'capcfg', 'capsync'];
+const PRIVATE = ['capcfg'];
 const MAX = 5.8 * 1024 * 1024; // límite de cuerpo de Netlify Functions ≈ 6 MB
 const CORS = {
   'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'GET, PUT, DELETE, OPTIONS',
+  'access-control-allow-methods': 'GET, PUT, POST, DELETE, OPTIONS',
   'access-control-allow-headers': 'authorization, content-type, x-file',
   'access-control-expose-headers': 'x-updated, x-size, x-file'
 };
@@ -18,7 +19,7 @@ function authorized(req, adminKey) {
 }
 
 /** store: { get(key,{type}), getMetadata(key), getWithMetadata(key,{type}), set(key, data, {metadata}), delete(key) } */
-export async function handle(req, store, adminKey) {
+export async function handle(req, store, adminKey, hooks = {}) {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   const url = new URL(req.url);
   const key = url.searchParams.get('key') || '';
@@ -27,10 +28,11 @@ export async function handle(req, store, adminKey) {
     if (key === 'auth') return authorized(req, adminKey) ? json({ ok: true }) : json({ ok: false, error: adminKey ? 'Clave incorrecta' : 'ADMIN_KEY no está configurada en Netlify' }, adminKey ? 401 : 500);
     if (key === 'meta') {
       const out = {};
-      for (const k of KEYS) { const m = await store.getMetadata(k); out[k] = m ? m.metadata : null; }
+      for (const k of KEYS) { if (PRIVATE.includes(k)) continue; const m = await store.getMetadata(k); out[k] = m ? m.metadata : null; }
       return json(out);
     }
     if (!KEYS.includes(key)) return json({ error: 'clave no válida' }, 400);
+    if (PRIVATE.includes(key) && !authorized(req, adminKey)) return json({ error: 'No autorizado' }, 401);
     const r = await store.getWithMetadata(key, { type: 'arrayBuffer' });
     if (!r) return json(null, 404);
     const md = r.metadata || {};
@@ -40,6 +42,10 @@ export async function handle(req, store, adminKey) {
   if (req.method === 'PUT' || req.method === 'POST' || req.method === 'DELETE') {
     if (!adminKey) return json({ error: 'ADMIN_KEY no está configurada en Netlify (Site configuration → Environment variables)' }, 500);
     if (!authorized(req, adminKey)) return json({ error: 'Clave de publicación incorrecta' }, 401);
+    if (key === 'capsync-run' && req.method === 'POST') {
+      if (!hooks.capSync) return json({ error: 'Sincronización no disponible' }, 501);
+      try { return json({ ok: true, status: await hooks.capSync() }); } catch (e) { return json({ error: e.message }, 500); }
+    }
     if (!KEYS.includes(key)) return json({ error: 'clave no válida' }, 400);
     if (req.method === 'DELETE') { await store.delete(key); return json({ ok: true, deleted: key }); }
     const body = await req.arrayBuffer();

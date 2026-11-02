@@ -5,6 +5,7 @@
   "type": "module",
   "description": "SmartLayout CALLAO · Gemelo digital del CD Callao",
   "dependencies": {
-    "@netlify/blobs": "^10.7.9"
+    "@netlify/blobs": "^10.7.9",
+    "xlsx": "0.18.5"
   }
 }
